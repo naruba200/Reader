@@ -1,0 +1,42 @@
+{
+  "name": "smart-reader",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Smart Reader & Language Learning Tool - MVP (Phase Alpha Web SPA)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dict:generate": "node scripts/generate-dict.mjs",
+    "dict:jmdict": "node scripts/generate-jmdict.mjs",
+    "dict:wordnet": "node scripts/generate-wordnet.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "epubjs": "^0.3.93",
+    "pdfjs-dist": "^6.2.108",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "unzipper": "^0.12.5",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0",
+    "wordnet-db": "^3.1.14"
+  }
+}

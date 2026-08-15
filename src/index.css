@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* CSS Custom Highlight API names registered by the reader */
+::highlight(level-a1),
+::highlight(level-a2),
+::highlight(level-b1),
+::highlight(level-b2),
+::highlight(level-c1),
+::highlight(level-c2),
+::highlight(level-n5),
+::highlight(level-n4),
+::highlight(level-n3),
+::highlight(level-n2),
+::highlight(level-n1),
+::highlight(level-unknown) {
+  background-color: transparent;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+
+::highlight(level-a1) { text-decoration-color: rgb(34 197 94); }
+::highlight(level-a2) { text-decoration-color: rgb(132 204 22); }
+::highlight(level-b1) { text-decoration-color: rgb(234 179 8); }
+::highlight(level-b2) { text-decoration-color: rgb(245 158 11); }
+::highlight(level-c1) { text-decoration-color: rgb(249 115 22); }
+::highlight(level-c2) { text-decoration-color: rgb(239 68 68); }
+::highlight(level-n5) { text-decoration-color: rgb(34 197 94); }
+::highlight(level-n4) { text-decoration-color: rgb(132 204 22); }
+::highlight(level-n3) { text-decoration-color: rgb(234 179 8); }
+::highlight(level-n2) { text-decoration-color: rgb(245 158 11); }
+::highlight(level-n1) { text-decoration-color: rgb(239 68 68); }
+::highlight(level-unknown) { text-decoration-color: rgb(168 85 247); text-decoration-style: dashed; }
+
+/* Vertical (top-to-bottom, right-to-left) reading mode for Japanese books.
+   Only the text container is vertical; the header and images stay horizontal. */
+.reading-vertical-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  height: 100%;
+  column-width: 22rem;
+  column-gap: 2rem;
+  column-fill: auto;
+}
+
+.reading-vertical-text p {
+  margin-block-end: 1.5rem;
+  margin-block-start: 0;
+}
