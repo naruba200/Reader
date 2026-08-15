@@ -12,8 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dict:generate": "node scripts/generate-dict.mjs",
-    "dict:jmdict": "node scripts/generate-jmdict.mjs",
-    "dict:wordnet": "node scripts/generate-wordnet.mjs"
+    "dict:jmdict": "node scripts/generate-jmdict-yomitan.mjs",
+    "dict:wordnet": "node scripts/generate-wordnet.mjs dist-packs --tar \"C:\\Users\\viduo\\Downloads\\wn3.1.dict.tar.gz\""
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

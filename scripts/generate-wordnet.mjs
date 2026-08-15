@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Generates the English dictionary pack (NDJSON) from Princeton WordNet.
 //
-// Source: the "wordnet-db" npm package (bundles the raw WordNet 3.1 dict files).
-//
 // Usage:
-//   node scripts/generate-wordnet.mjs [outputDir]
+//   node scripts/generate-wordnet.mjs [outputDir] [--tar <path>] [--dir <path>]
 //     outputDir: where to write wordnet-en.pack.ndjson (default: dist-packs/)
+//     --tar:     path to a wn3.1.dict.tar.gz archive; extracted automatically
+//                to a temp dir (the archive holds a top-level dict/ folder)
+//     --dir:     path to an extracted WordNet dict folder (data.noun, ...)
+//     (none)     falls back to the bundled wordnet-db copy
 //
 // Output:
 //   dist-packs/wordnet-en.pack.ndjson - one DictionaryEntry JSON per line
@@ -13,13 +15,14 @@
 //
 // Hosting: upload the generated .ndjson to GitHub Releases and set
 //   PACK_BASE_URL in src/core/dictionary/packs.ts accordingly.
-import { createWriteStream, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DICT_DIR = join(ROOT, "node_modules", "wordnet-db", "dict");
-const OUT_DIR = join(ROOT, process.argv[2] || "dist-packs");
+const OUT_DIR = resolve(process.argv[2] || "dist-packs");
 
 const POS_FILES = [
   ["data.noun", "noun"],
@@ -29,6 +32,37 @@ const POS_FILES = [
 ];
 
 const VERSION = "3.1";
+
+function parseArgs() {
+  const args = process.argv.slice(3);
+  const opts = { tar: undefined, dir: undefined };
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--tar") opts.tar = args[i + 1];
+    if (args[i] === "--dir") opts.dir = args[i + 1];
+  }
+  return opts;
+}
+
+/** Extract the WordNet dict folder, returning its absolute path. */
+function resolveDictDir(opts) {
+  if (opts.dir) {
+    if (!existsSync(join(opts.dir, "data.noun"))) {
+      throw new Error(`--dir ${opts.dir} does not contain data.noun`);
+    }
+    return opts.dir;
+  }
+  if (opts.tar) {
+    const extractDir = join(tmpdir(), `wn3.1-dict-${Date.now()}`);
+    mkdirSync(extractDir, { recursive: true });
+    console.log(`Extracting ${opts.tar} -> ${extractDir}`);
+    const r = spawnSync("tar", ["-xzf", opts.tar, "-C", extractDir], { stdio: "pipe" });
+    if (r.status !== 0) {
+      throw new Error(`tar extraction failed: ${r.stderr?.toString() || r.stdout?.toString() || "unknown error"}`);
+    }
+    return join(extractDir, "dict");
+  }
+  return join(ROOT, "node_modules", "wordnet-db", "dict");
+}
 
 function parseGloss(gloss) {
   // WordNet gloss format: "definition; "example one"; "example two""
@@ -42,6 +76,8 @@ function parseGloss(gloss) {
 }
 
 async function main() {
+  const opts = parseArgs();
+  const DICT_DIR = resolveDictDir(opts);
   mkdirSync(OUT_DIR, { recursive: true });
   const entries = new Map();
 
