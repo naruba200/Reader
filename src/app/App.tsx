@@ -1,54 +1,97 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { BookDocument, LanguageCode } from "../core/types";
 import { parserForFileName } from "../core/books";
 import { Reader } from "../reader/Reader";
 import { useTheme } from "./ThemeContext";
 import { DictionaryPage } from "./DictionaryPage";
-
-interface LibraryBook {
-  id: string;
-  title: string;
-  language: string;
-  chapters: number;
-  doc: BookDocument;
-}
+import {
+  getLibraryStore,
+  type StoredBookMeta,
+  type StoredProgress,
+} from "../core/library";
 
 type View = "library" | "reader" | "dictionary";
 
+interface ActiveBook {
+  id: string;
+  doc: BookDocument;
+  progress?: StoredProgress;
+}
+
 export function App() {
   const { theme, toggleTheme } = useTheme();
-  const [books, setBooks] = useState<LibraryBook[]>([]);
-  const [active, setActive] = useState<LibraryBook | null>(null);
+  const [books, setBooks] = useState<StoredBookMeta[]>([]);
+  const [hydrated, setHydrated] = useState(false);
+  const [active, setActive] = useState<ActiveBook | null>(null);
   const [view, setView] = useState<View>("library");
   const [dictInitial, setDictInitial] = useState<{ language: LanguageCode; word?: string }>();
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // Load the persisted library on mount so imported books survive restarts.
+  useEffect(() => {
+    let cancelled = false;
+    getLibraryStore()
+      .listBooks()
+      .then((list) => {
+        if (cancelled) return;
+        setBooks(list);
+        setHydrated(true);
+      })
+      .catch((err) => {
+        console.warn("Failed to load library", err);
+        setHydrated(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFile = async (file: File) => {
     setError(null);
-    setBusy(true);
+    setBusy("Importing…");
     try {
       const parser = await parserForFileName(file.name);
       if (!parser) {
         throw new Error(`Unsupported file: ${file.name}`);
       }
       const doc = await parser.parse(file, file.name);
-      const book: LibraryBook = {
-        id: doc.id,
-        title: doc.title,
-        language: doc.language.toUpperCase(),
-        chapters: doc.chapters.length,
-        doc,
-      };
-      setBooks((prev) => [...prev, book]);
-      setActive(book);
+      const meta = await getLibraryStore().saveBook(doc, file.name);
+      setBooks((prev) => [...prev, meta]);
+      setActive({ id: meta.id, doc });
       setView("reader");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
+
+  const openBook = async (meta: StoredBookMeta) => {
+    setError(null);
+    setBusy("Opening…");
+    try {
+      const doc = await getLibraryStore().loadBook(meta.id);
+      if (!doc) throw new Error("Saved book data is missing");
+      const progress = await getLibraryStore().loadProgress(meta.id);
+      setActive({ id: meta.id, doc, progress });
+      setView("reader");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleProgress = useCallback(
+    (chapterIndex: number, pageIndex: number) => {
+      if (!active) return;
+      void getLibraryStore()
+        .saveProgress(active.id, chapterIndex, pageIndex)
+        .catch((err) => console.warn("Failed to save progress", err));
+    },
+    [active],
+  );
 
   const openDictionary = (language: LanguageCode, word?: string) => {
     setDictInitial({ language, word });
@@ -106,7 +149,7 @@ export function App() {
       )}
 
       {busy && (
-        <div className="mx-4 mt-3 text-sm text-gray-500 dark:text-gray-400">Importing…</div>
+        <div className="mx-4 mt-3 text-sm text-gray-500 dark:text-gray-400">{busy}</div>
       )}
 
       {view === "reader" && active ? (
@@ -118,6 +161,9 @@ export function App() {
               setView("library");
             }}
             onOpenDictionary={openDictionary}
+            initialChapterIndex={active.progress?.chapterIndex}
+            initialPageIndex={active.progress?.pageIndex}
+            onProgress={handleProgress}
           />
         </div>
       ) : view === "dictionary" ? (
@@ -129,7 +175,11 @@ export function App() {
         </div>
       ) : (
         <main className="flex-1 overflow-y-auto p-4">
-          {books.length === 0 ? (
+          {!hydrated ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
+              <p className="text-lg">Loading library…</p>
+            </div>
+          ) : books.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
               <p className="text-lg">No books yet</p>
               <p className="text-sm">Import an EPUB, PDF, TXT, or MD file to start reading.</p>
@@ -140,12 +190,12 @@ export function App() {
                 <li key={book.id}>
                   <button
                     type="button"
-                    onClick={() => setActive(book)}
+                    onClick={() => void openBook(book)}
                     className="w-full rounded-lg border border-gray-200 bg-white p-4 text-left shadow-sm hover:shadow dark:border-gray-700 dark:bg-gray-800"
                   >
                     <div className="font-semibold">{book.title}</div>
                     <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      {book.language} · {book.chapters} chapters
+                      {book.language.toUpperCase()} · {book.chapters} chapters
                     </div>
                   </button>
                 </li>

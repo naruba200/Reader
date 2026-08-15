@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AnalyzedToken,
   BookDocument,
@@ -20,6 +20,12 @@ export interface ReaderProps {
   book: BookDocument;
   onClose: () => void;
   onOpenDictionary?: (language: LanguageCode, word: string) => void;
+  /** Chapter to start on when the book opens (restored reading position). */
+  initialChapterIndex?: number;
+  /** Page within the initial chapter to start on. */
+  initialPageIndex?: number;
+  /** Called whenever the reading position changes. */
+  onProgress?: (chapterIndex: number, pageIndex: number) => void;
 }
 
 const LEVEL_CLASS: Partial<Record<Level, string>> = {
@@ -37,13 +43,29 @@ const LEVEL_CLASS: Partial<Record<Level, string>> = {
   UNKNOWN: "underline decoration-purple-500 decoration-2 underline-offset-2 decoration-dashed",
 };
 
-export function Reader({ book, onClose, onOpenDictionary }: ReaderProps) {
-  const [chapterIndex, setChapterIndex] = useState(() =>
-    Math.max(
-      0,
-      book.chapters.findIndex((c) => c.text.trim().length > 0),
-    ),
+export function Reader({
+  book,
+  onClose,
+  onOpenDictionary,
+  initialChapterIndex,
+  initialPageIndex,
+  onProgress,
+}: ReaderProps) {
+  const [chapterIndex, setChapterIndex] = useState(() => {
+    const firstText = book.chapters.findIndex((c) => c.text.trim().length > 0);
+    if (initialChapterIndex !== undefined) {
+      const clamped = Math.max(0, Math.min(initialChapterIndex, book.chapters.length - 1));
+      if (book.chapters[clamped] && book.chapters[clamped].text.trim().length === 0) {
+        return firstText;
+      }
+      return clamped;
+    }
+    return Math.max(0, firstText);
+  });
+  const [pageIndex, setPageIndex] = useState(() =>
+    Math.max(0, initialPageIndex ?? 0),
   );
+  const mounted = useRef(false);
   const [tokens, setTokens] = useState<AnalyzedToken[]>([]);
   const [rating, setRating] = useState<DifficultyRating>("Moderate");
   const [popover, setPopover] = useState<PopoverState | null>(null);
@@ -52,11 +74,19 @@ export function Reader({ book, onClose, onOpenDictionary }: ReaderProps) {
   const [readingMode, setReadingMode] = useState<"horizontal" | "vertical">(() =>
     book.language === "ja" ? "vertical" : "horizontal",
   );
-  const [pageIndex, setPageIndex] = useState(0);
 
   const chapter = book.chapters[chapterIndex] ?? book.chapters[0];
   const pages = useMemo(() => paginateChapter(chapter), [chapter]);
   const page = pages[Math.min(pageIndex, pages.length - 1)];
+
+  // Report reading position changes (skipping the initial mount).
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    onProgress?.(chapterIndex, pageIndex);
+  }, [chapterIndex, pageIndex, onProgress]);
 
   const processor = useMemo(() => {
     const adapter = getAdapter(book.language);
