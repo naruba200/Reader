@@ -11,23 +11,23 @@ export interface PackDefinition {
 
 /** Where generated dictionary packs are hosted (GitHub Releases). */
 const PACK_BASE_URL =
-  "https://github.com/anomalyco/reader-dicts/releases/latest/download";
+  "https://github.com/naruba200/Reader/releases/latest/download";
 
 /** Downloadable dictionary packs per language. */
 export const DICTIONARY_PACKS: Partial<Record<LanguageCode, PackDefinition>> = {
   ja: {
     language: "ja",
     source: "JMDict",
-    version: "1.0",
+    version: "2026-08-15",
     fileName: "jmdict-ja.pack.ndjson",
-    estimatedBytes: 85 * 1024 * 1024,
+    estimatedBytes: 47 * 1024 * 1024,
   },
   en: {
     language: "en",
     source: "WordNet",
-    version: "1.0",
+    version: "3.1",
     fileName: "wordnet-en.pack.ndjson",
-    estimatedBytes: 35 * 1024 * 1024,
+    estimatedBytes: 23 * 1024 * 1024,
   },
 };
 
