@@ -11,7 +11,7 @@ export interface PackDefinition {
 
 /** Where generated dictionary packs are hosted (GitHub Releases). */
 const PACK_BASE_URL =
-  "https://github.com/naruba200/Reader/releases/latest/download";
+  "https://raw.githubusercontent.com/naruba200/Reader/main/packs";
 
 /** Downloadable dictionary packs per language. */
 export const DICTIONARY_PACKS: Partial<Record<LanguageCode, PackDefinition>> = {
