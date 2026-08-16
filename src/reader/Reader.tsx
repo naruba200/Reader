@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import type {
   AnalyzedToken,
   BookDocument,
@@ -26,6 +26,22 @@ export interface ReaderProps {
   initialPageIndex?: number;
   /** Called whenever the reading position changes. */
   onProgress?: (chapterIndex: number, pageIndex: number) => void;
+  /** Lets the parent intercept the Android back button when a popover is open. */
+  onRegisterCloseHandler?: (close: (() => void) | null) => void;
+}
+
+const FONT_SIZE_KEY = "smart-reader-font-size";
+const FONT_SIZE_MIN = 13;
+const FONT_SIZE_MAX = 32;
+
+function loadFontSize(): number {
+  try {
+    const value = Number(localStorage.getItem(FONT_SIZE_KEY));
+    if (value >= FONT_SIZE_MIN && value <= FONT_SIZE_MAX) return value;
+  } catch {
+    /* ignore */
+  }
+  return 17;
 }
 
 const LEVEL_CLASS: Partial<Record<Level, string>> = {
@@ -47,6 +63,7 @@ export function Reader({
   book,
   onClose,
   onOpenDictionary,
+  onRegisterCloseHandler,
   initialChapterIndex,
   initialPageIndex,
   onProgress,
@@ -74,6 +91,30 @@ export function Reader({
   const [readingMode, setReadingMode] = useState<"horizontal" | "vertical">(() =>
     book.language === "ja" ? "vertical" : "horizontal",
   );
+  const [fontSize, setFontSize] = useState<number>(loadFontSize);
+
+  const changeFontSize = useCallback((delta: number) => {
+    setFontSize((prev) => {
+      const next = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, prev + delta));
+      try {
+        localStorage.setItem(FONT_SIZE_KEY, String(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
+  // While a word popover is open, register a close handler so the Android back
+  // button closes it instead of leaving the reader.
+  useEffect(() => {
+    if (!popover) {
+      onRegisterCloseHandler?.(null);
+      return;
+    }
+    onRegisterCloseHandler?.(() => setPopover(null));
+    return () => onRegisterCloseHandler?.(null);
+  }, [popover, onRegisterCloseHandler]);
 
   const chapter = book.chapters[chapterIndex] ?? book.chapters[0];
   const pages = useMemo(() => paginateChapter(chapter), [chapter]);
@@ -164,52 +205,107 @@ export function Reader({
     }
   }, [pageIndex, pages.length, chapterIndex, book.chapters.length]);
 
+  // Swipe left/right to turn pages. Vertical swipes keep scrolling; if the
+  // reading area can scroll horizontally (vertical reading mode), the swipe is
+  // left to the browser and only navigates when there is nothing to scroll.
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handleTouchStart = useCallback((e: TouchEvent<HTMLDivElement>) => {
+    const t = e.touches[0];
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
+  }, []);
+
+  const handleTouchEnd = useCallback(
+    (e: TouchEvent<HTMLDivElement>) => {
+      const start = touchStartRef.current;
+      touchStartRef.current = null;
+      if (!start) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy)) return;
+      const el = contentRef.current;
+      if (el && el.scrollLeft > 0) return;
+      if (dx < 0) goNext();
+      else goPrev();
+    },
+    [goNext, goPrev],
+  );
+
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
-        >
-          ← Library
-        </button>
-        <div className="min-w-0">
-          <div className="truncate font-semibold">{book.title}</div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">
-            {book.language.toUpperCase()} · Chapter {chapterIndex + 1} of {book.chapters.length} ·
-            Page {pageIndex + 1} of {pages.length}
+      <header className="flex flex-col gap-1 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            ← Library
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-semibold">{book.title}</div>
+            <div className="truncate text-xs text-gray-500 dark:text-gray-400">
+              {book.language.toUpperCase()} · Chapter {chapterIndex + 1} of {book.chapters.length} ·
+              Page {pageIndex + 1} of {pages.length}
+            </div>
           </div>
         </div>
-        <select
-          className="ml-auto rounded border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
-          value={chapterIndex}
-          onChange={(e) => {
-            setChapterIndex(Number(e.target.value));
-            setPageIndex(0);
-          }}
-        >
-          {book.chapters.map((c, i) => (
-            <option key={c.id} value={i}>
-              {c.title}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => setReadingMode((m) => (m === "horizontal" ? "vertical" : "horizontal"))}
-          className="shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
-          title="Toggle vertical (top-to-bottom) reading"
-        >
-          {readingMode === "horizontal" ? "縦" : "横"}
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
+            value={chapterIndex}
+            onChange={(e) => {
+              setChapterIndex(Number(e.target.value));
+              setPageIndex(0);
+            }}
+          >
+            {book.chapters.map((c, i) => (
+              <option key={c.id} value={i}>
+                {c.title}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setReadingMode((m) => (m === "horizontal" ? "vertical" : "horizontal"))}
+            className="shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
+            title="Toggle vertical (top-to-bottom) reading"
+          >
+            {readingMode === "horizontal" ? "縦" : "横"}
+          </button>
+          <span className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => changeFontSize(-1)}
+              disabled={fontSize <= FONT_SIZE_MIN}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-sm disabled:opacity-40 dark:border-gray-600 dark:bg-gray-800"
+              aria-label="Decrease font size"
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              onClick={() => changeFontSize(1)}
+              disabled={fontSize >= FONT_SIZE_MAX}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-sm disabled:opacity-40 dark:border-gray-600 dark:bg-gray-800"
+              aria-label="Increase font size"
+            >
+              A+
+            </button>
+          </span>
+        </div>
       </header>
 
       <div
+        ref={contentRef}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
         className={
           readingMode === "vertical"
-            ? "flex-1 overflow-x-auto overflow-y-hidden"
-            : "flex-1 overflow-y-auto"
+            ? "flex-1 overflow-x-auto overflow-y-hidden touch-auto"
+            : "flex-1 overflow-y-auto touch-pan-y"
         }
       >
         {busy ? (
@@ -225,6 +321,7 @@ export function Reader({
             onWordClick={handleWordClick}
             page={page}
             vertical={readingMode === "vertical"}
+            fontSize={fontSize}
           />
         )}
       </div>

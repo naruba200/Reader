@@ -18,6 +18,8 @@ export interface ChapterViewProps {
   page?: Page;
   /** Render the book's text vertically (top-to-bottom) for Japanese-style reading. */
   vertical?: boolean;
+  /** Base font size in px applied to the chapter text. */
+  fontSize?: number;
 }
 
 const RATING_BADGE: Record<DifficultyRating, string> = {
@@ -43,6 +45,7 @@ export const ChapterView = memo(function ChapterView({
   onWordClick,
   page,
   vertical = false,
+  fontSize,
 }: ChapterViewProps) {
   const text = chapter.text;
   const paragraphClass = vertical ? "leading-relaxed" : "mb-4 leading-relaxed";
@@ -121,6 +124,7 @@ export const ChapterView = memo(function ChapterView({
 
   return (
     <article
+      style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
       className={
         vertical ? "relative h-full flex flex-col py-8 px-4" : "relative max-w-prose mx-auto py-8 px-4"
       }

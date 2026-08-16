@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
 import type { BookDocument, LanguageCode } from "../core/types";
 import { parserForFileName } from "../core/books";
 import { Reader } from "../reader/Reader";
@@ -27,6 +29,43 @@ export function App() {
   const [dictInitial, setDictInitial] = useState<{ language: LanguageCode; word?: string }>();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Keep latest navigation state in refs so the native back handler (registered
+  // once) always acts on the current screen instead of a stale closure.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const closeHandlerRef = useRef<(() => void) | null>(null);
+  const registerCloseHandler = useCallback((close: (() => void) | null) => {
+    closeHandlerRef.current = close;
+  }, []);
+
+  // Android hardware back / system gesture: close any open popover first, then
+  // navigate between screens, and only exit the app from the library screen.
+  useEffect(() => {
+    if (Capacitor.getPlatform() !== "android") return;
+    let remove: (() => void) | undefined;
+    void CapApp.addListener("backButton", () => {
+      if (closeHandlerRef.current) {
+        closeHandlerRef.current();
+        return;
+      }
+      if (viewRef.current === "reader") {
+        setActive(null);
+        setView("library");
+      } else if (viewRef.current === "dictionary") {
+        setView(activeRef.current ? "reader" : "library");
+      } else {
+        void CapApp.exitApp();
+      }
+    }).then((handle) => {
+      remove = handle.remove;
+    });
+    return () => {
+      remove?.();
+    };
+  }, []);
 
   // Load the persisted library on mount so imported books survive restarts.
   useEffect(() => {
@@ -161,6 +200,7 @@ export function App() {
               setView("library");
             }}
             onOpenDictionary={openDictionary}
+            onRegisterCloseHandler={registerCloseHandler}
             initialChapterIndex={active.progress?.chapterIndex}
             initialPageIndex={active.progress?.pageIndex}
             onProgress={handleProgress}
