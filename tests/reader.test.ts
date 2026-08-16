@@ -7,6 +7,7 @@ import {
 } from "../src/reader/spans";
 import { paginateChapter } from "../src/reader/pages";
 import { buildHighlightRanges, highlightNameFor } from "../src/reader/highlight";
+import { shouldHighlightLevel } from "../src/reader/Reader";
 
 describe("splitWords", () => {
   it("splits Latin text into spans with offsets", () => {
@@ -226,5 +227,21 @@ describe("highlightNameFor", () => {
   it("lowercases level into a registered name", () => {
     expect(highlightNameFor("B2")).toBe("level-b2");
     expect(highlightNameFor("UNKNOWN")).toBe("level-unknown");
+  });
+});
+
+describe("shouldHighlightLevel", () => {
+  it("underline filters follow the selected mode", () => {
+    expect(shouldHighlightLevel("N5", "all")).toBe(true);
+    expect(shouldHighlightLevel("UNKNOWN", "all")).toBe(true);
+    expect(shouldHighlightLevel("UNKNOWN", "unknown")).toBe(true);
+    expect(shouldHighlightLevel("N5", "unknown")).toBe(false);
+    expect(shouldHighlightLevel("N2", "hard")).toBe(true);
+    expect(shouldHighlightLevel("N1", "hard")).toBe(true);
+    expect(shouldHighlightLevel("C1", "hard")).toBe(true);
+    expect(shouldHighlightLevel("N5", "hard")).toBe(false);
+    expect(shouldHighlightLevel("A1", "hard")).toBe(false);
+    expect(shouldHighlightLevel("N1", "off")).toBe(false);
+    expect(shouldHighlightLevel("UNKNOWN", "off")).toBe(false);
   });
 });

@@ -6,6 +6,8 @@ import { parserForFileName } from "../core/books";
 import { Reader } from "../reader/Reader";
 import { useTheme } from "./ThemeContext";
 import { DictionaryPage } from "./DictionaryPage";
+import { dictionaryManager } from "../core/dictionary/downloadManager";
+import { getKuromojiTokenizer } from "../core/language";
 import {
   getLibraryStore,
   type StoredBookMeta,
@@ -13,6 +15,12 @@ import {
 } from "../core/library";
 
 type View = "library" | "reader" | "dictionary";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 interface ActiveBook {
   id: string;
@@ -29,6 +37,33 @@ export function App() {
   const [dictInitial, setDictInitial] = useState<{ language: LanguageCode; word?: string }>();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [activeDownloads, setActiveDownloads] = useState<{
+    count: number;
+    received: number;
+    total?: number;
+  }>({ count: 0, received: 0 });
+
+  // Show a badge while any dictionary pack downloads in the background, even
+  // when the user is on another page.
+  useEffect(() => {
+    return dictionaryManager.subscribe(({ progress }) => {
+      const langs = (Object.keys(progress) as LanguageCode[]).filter((l) => progress[l]);
+      const received = langs.reduce((n, l) => n + (progress[l]?.received ?? 0), 0);
+      const total = langs.reduce((n, l) => n + (progress[l]?.total ?? 0), 0);
+      setActiveDownloads({ count: langs.length, received, total: total || undefined });
+    });
+  }, []);
+
+  // Preload the Kuromoji dictionaries once the app opens so the first Japanese
+  // analysis of a reading session is instant, not a multi-second stall.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (books.some((b) => b.language === "ja")) {
+      void getKuromojiTokenizer().catch(() => {
+        // Warm-up is best-effort; the reader falls back to a lazy load.
+      });
+    }
+  }, [hydrated, books]);
 
   // Keep latest navigation state in refs so the native back handler (registered
   // once) always acts on the current screen instead of a stale closure.
@@ -158,6 +193,18 @@ export function App() {
         >
           Dictionary
         </button>
+        {activeDownloads.count > 0 && (
+          <button
+            type="button"
+            onClick={() => setView("dictionary")}
+            className="flex items-center gap-1.5 rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40 dark:text-blue-200 dark:hover:bg-blue-900/60"
+            title="Dictionary packs are downloading in the background"
+          >
+            <span className="animate-pulse">↓</span>
+            {formatBytes(activeDownloads.received)}
+            {activeDownloads.total ? ` / ${formatBytes(activeDownloads.total)}` : ""}
+          </button>
+        )}
         <label className="cursor-pointer rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700">
           Import book…
           <input

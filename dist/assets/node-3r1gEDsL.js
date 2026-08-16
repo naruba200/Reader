@@ -1,0 +1,1 @@
+const a={};var e=a.promisify(a.gunzip),i=class{constructor(r){this.options=r}async loadArrayBuffer(r){const t=await a.readFile(a.join(this.options.dic_path,r)),o=await e(t);return new Uint8Array(o).buffer}},s=i;export{s as default};

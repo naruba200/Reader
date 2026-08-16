@@ -1,3 +1,4 @@
+import * as kuromoji from "@patdx/kuromoji";
 import type { LanguageAdapter, Token } from "../types";
 
 /** Hiragana range (small kana ぁ-ゖ). */
@@ -270,15 +271,99 @@ export function deinflectJapanese(surface: string): Deinflection {
   return { surface: s, lemma };
 }
 
+/** Part-of-speech groups treated as function words: skipped, so they are never underlined. */
+const FUNCTION_WORD_POS = new Set([
+  "助詞", "助動詞", "記号", "感動詞", "接続詞", "連体詞",
+]);
+
+/** Kuromoji dictionary directory (browser). Bundled under public/dict/kuromoji for offline use. */
+const KUROMOJI_DICT_URL = "/dict/kuromoji/";
+
+/**
+ * Browser dictionary loader that handles both kinds of servers: those that
+ * pre-compress `.gz` files (Content-Encoding: gzip, e.g. Vite dev/preview) and
+ * those that serve the raw gzip bytes (e.g. file:// on Android). Sniffs the
+ * gzip magic bytes and decompresses only when needed.
+ */
+const browserLoader: kuromoji.LoaderConfig = {
+  async loadArrayBuffer(filename) {
+    const res = await fetch(KUROMOJI_DICT_URL + filename);
+    if (!res.ok) {
+      throw new Error(`Kuromoji dictionary fetch failed (HTTP ${res.status}): ${filename}`);
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+      const stream = new Response(bytes).body!.pipeThrough(new DecompressionStream("gzip"));
+      return new Response(stream).arrayBuffer();
+    }
+    return bytes.buffer;
+  },
+};
+
+/** Resolved tokenizer type (the Tokenizer class is not exported by the package). */
+type KuromojiTokenizer = Awaited<ReturnType<kuromoji.TokenizerBuilder["build"]>>;
+
+function buildTokenizer(): Promise<KuromojiTokenizer> {
+  if (typeof window !== "undefined") {
+    return new kuromoji.TokenizerBuilder({ loader: browserLoader }).build();
+  }
+  // Node (tests): read the same bundled dictionaries from disk. Dynamically
+  // imported so the browser bundle never pulls in fs/zlib.
+  return import("@patdx/kuromoji/node").then(({ default: NodeDictionaryLoader }) =>
+    new kuromoji.TokenizerBuilder({
+      loader: new NodeDictionaryLoader({ dic_path: "public/dict/kuromoji/" }),
+    }).build(),
+  );
+}
+
+let tokenizerPromise: Promise<KuromojiTokenizer> | null = null;
+
+/** Lazy singleton Kuromoji tokenizer. Rebuilds if a load attempt fails. */
+export function getKuromojiTokenizer(): Promise<KuromojiTokenizer> {
+  if (tokenizerPromise === null) {
+    tokenizerPromise = buildTokenizer().catch((err) => {
+      tokenizerPromise = null;
+      throw err;
+    });
+  }
+  return tokenizerPromise;
+}
+
+/**
+ * Tokenize Japanese with Kuromoji and map to our Token shape.
+ * Function words (particles, auxiliaries, punctuation) are dropped so only
+ * content words get underlined; offsets are character indices into `text`.
+ */
+export async function tokenizeJapanese(text: string): Promise<Token[]> {
+  const tokenizer = await getKuromojiTokenizer();
+  const tokens: Token[] = [];
+  for (const t of tokenizer.tokenize(text)) {
+    if (FUNCTION_WORD_POS.has(t.pos)) continue;
+    tokens.push({
+      surface: t.surface_form,
+      lemma: t.basic_form,
+      pos: t.pos,
+      start: t.word_position - 1,
+      length: t.surface_form.length,
+    });
+  }
+  return tokens;
+}
+
 export const JAPANESE_ADAPTER: LanguageAdapter = {
   language: "ja",
   scheme: "JLPT",
   async tokenize(text: string): Promise<Token[]> {
-    const { tokens } = segmentJapanese(text);
-    return tokens.map((t) => ({
-      ...t,
-      lemma: deinflectJapanese(t.surface).lemma,
-    }));
+    try {
+      return await tokenizeJapanese(text);
+    } catch {
+      // Fall back to the stub segmenter when the Kuromoji dictionary is unavailable.
+      const { tokens } = segmentJapanese(text);
+      return tokens.map((t) => ({
+        ...t,
+        lemma: deinflectJapanese(t.surface).lemma,
+      }));
+    }
   },
   lemmatize(surface: string): string {
     return deinflectJapanese(surface).lemma;

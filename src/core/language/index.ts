@@ -32,6 +32,8 @@ export { JAPANESE_ADAPTER } from "./japanese";
 export {
   segmentJapanese,
   deinflectJapanese,
+  getKuromojiTokenizer,
+  tokenizeJapanese,
   isHiragana,
   isKatakana,
   isKana,

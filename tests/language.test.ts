@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { readFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
+import * as kuromoji from "@patdx/kuromoji";
 import {
   ENGLISH_ADAPTER,
   GERMAN_ADAPTER,
@@ -15,6 +18,7 @@ import {
   isKatakana,
   isKanji,
   toHiragana,
+  tokenizeJapanese,
 } from "../src/core/language/japanese";
 
 describe("tokenizeLatin", () => {
@@ -116,6 +120,65 @@ describe("JAPANESE_ADAPTER", () => {
     const tokens = await JAPANESE_ADAPTER.tokenize("食べる");
     expect(tokens.length).toBeGreaterThan(0);
     expect(tokens[0].surface).toBe("食べる");
+  });
+});
+
+describe("tokenizeJapanese (Kuromoji)", () => {
+  it("segments into dictionary-form lemmas with correct offsets", async () => {
+    const tokens = await tokenizeJapanese("私は今日学校へ行った。");
+    expect(tokens.map((t) => t.surface)).toEqual(["私", "今日", "学校", "行っ"]);
+    expect(tokens[0].start).toBe(0);
+    expect(tokens[0].length).toBe(1);
+    expect(tokens[1].start).toBe(2);
+    expect(tokens[1].length).toBe(2);
+    expect(tokens[2].start).toBe(4);
+    expect(tokens[3].lemma).toBe("行く");
+  });
+
+  it("drops function words (particles, auxiliaries, punctuation)", async () => {
+    const tokens = await tokenizeJapanese("これは本です。");
+    expect(tokens.map((t) => t.surface)).toEqual(["これ", "本"]);
+    expect(tokens.every((t) => t.pos !== "助詞" && t.pos !== "助動詞")).toBe(true);
+  });
+});
+
+describe("kuromoji dictionary loaders", () => {
+  const DICT_DIR = "public/dict/kuromoji/";
+
+  it("sniffs gzip magic bytes and decompresses raw .gz (Android file://)", async () => {
+    // Server serves the raw gzip bytes; the loader must detect the magic and
+    // decompress itself instead of re-decompressing already-decompressed bytes.
+    const loader: kuromoji.LoaderConfig = {
+      async loadArrayBuffer(filename) {
+        const bytes = await readFile(DICT_DIR + filename);
+        expect(bytes[0]).toBe(0x1f);
+        expect(bytes[1]).toBe(0x8b);
+        const stream = new Response(bytes).body!.pipeThrough(
+          new DecompressionStream("gzip"),
+        );
+        return new Response(stream).arrayBuffer();
+      },
+    };
+    const tokenizer = await new kuromoji.TokenizerBuilder({ loader }).build();
+    const tokens = tokenizer.tokenize("私は今日学校へ行った。");
+    expect(tokens.map((t) => t.surface_form)).toContain("私");
+    expect(tokens.map((t) => t.surface_form)).toContain("今日");
+  });
+
+  it("uses pre-decompressed bytes as-is (Vite dev Content-Encoding: gzip)", async () => {
+    // Vite dev compresses .gz responses itself, so the browser receives plain
+    // bytes. Re-gunzipping them used to throw "invalid file signature"; the
+    // loader must hand them through unchanged.
+    const loader: kuromoji.LoaderConfig = {
+      async loadArrayBuffer(filename) {
+        const gz = await readFile(DICT_DIR + filename);
+        return gunzipSync(gz).buffer;
+      },
+    };
+    const tokenizer = await new kuromoji.TokenizerBuilder({ loader }).build();
+    const tokens = tokenizer.tokenize("今日は良い天気です。");
+    expect(tokens.map((t) => t.surface_form)).toContain("今日");
+    expect(tokens.map((t) => t.surface_form)).toContain("天気");
   });
 });
 

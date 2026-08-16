@@ -8,10 +8,11 @@ import type {
   Level,
 } from "../core/types";
 import { getAdapter } from "../core/language";
-import { bundledEntries } from "../core/leveldb/loader";
-import { MemoryLevelDb } from "../core/leveldb/LevelDb";
+import { loadLevelDb } from "../core/leveldb/loader";
+import type { LevelDb } from "../core/leveldb/LevelDb";
 import { MemoryPageCache, DocumentProcessor } from "../core/pipeline";
 import { getDictionaryStore } from "../core/dictionary";
+import { levelRank } from "../core/analysis";
 import { ChapterView } from "./ChapterView";
 import { WordPopover, type PopoverState } from "./WordPopover";
 import { paginateChapter } from "./pages";
@@ -42,6 +43,44 @@ function loadFontSize(): number {
     /* ignore */
   }
   return 17;
+}
+
+/** Which tokens get an underline in the chapter text. */
+export type HighlightMode = "all" | "hard" | "unknown" | "off";
+
+const HIGHLIGHT_KEY = "smart-reader-highlight-mode";
+
+const HIGHLIGHT_MODES: readonly HighlightMode[] = ["all", "hard", "unknown", "off"];
+
+const HIGHLIGHT_LABEL: Record<HighlightMode, string> = {
+  all: "All",
+  hard: "Hard",
+  unknown: "New",
+  off: "Off",
+};
+
+function loadHighlightMode(): HighlightMode {
+  try {
+    const value = localStorage.getItem(HIGHLIGHT_KEY);
+    if (value !== null && (HIGHLIGHT_MODES as readonly string[]).includes(value)) return value as HighlightMode;
+  } catch {
+    /* ignore */
+  }
+  return "unknown";
+}
+
+/** Whether a token at `level` gets an underline for the given highlight mode. */
+export function shouldHighlightLevel(level: Level, mode: HighlightMode): boolean {
+  switch (mode) {
+    case "all":
+      return true;
+    case "unknown":
+      return level === "UNKNOWN";
+    case "hard":
+      return level === "UNKNOWN" || levelRank(level) >= 4;
+    case "off":
+      return false;
+  }
 }
 
 const LEVEL_CLASS: Partial<Record<Level, string>> = {
@@ -87,11 +126,22 @@ export function Reader({
   const [rating, setRating] = useState<DifficultyRating>("Moderate");
   const [popover, setPopover] = useState<PopoverState | null>(null);
   const [entry, setEntry] = useState<DictionaryEntry | undefined>();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [readingMode, setReadingMode] = useState<"horizontal" | "vertical">(() =>
     book.language === "ja" ? "vertical" : "horizontal",
   );
   const [fontSize, setFontSize] = useState<number>(loadFontSize);
+  const [levelDb, setLevelDb] = useState<LevelDb | null>(null);
+  const [highlightMode, setHighlightMode] = useState<HighlightMode>(loadHighlightMode);
+
+  const changeHighlightMode = useCallback((mode: HighlightMode) => {
+    setHighlightMode(mode);
+    try {
+      localStorage.setItem(HIGHLIGHT_KEY, mode);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const changeFontSize = useCallback((delta: number) => {
     setFontSize((prev) => {
@@ -130,14 +180,28 @@ export function Reader({
   }, [chapterIndex, pageIndex, onProgress]);
 
   const processor = useMemo(() => {
+    if (!levelDb) return null;
     const adapter = getAdapter(book.language);
-    const scheme = book.language === "ja" ? "JLPT" : "CEFR";
-    const levelDb = new MemoryLevelDb(scheme, bundledEntries(book.language));
     const dict = getDictionaryStore(book.language);
     return new DocumentProcessor(adapter, levelDb, dict, new MemoryPageCache());
+  }, [book.id, book.language, levelDb]);
+
+  // Load the level database (JLPT/CEFR wordlist) for the book's language. The
+  // full JLPT list is served from /dict; on any failure it falls back to the
+  // bundled sample.
+  useEffect(() => {
+    let cancelled = false;
+    setLevelDb(null);
+    loadLevelDb(book.language).then((db) => {
+      if (!cancelled) setLevelDb(db);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [book.id, book.language]);
 
   useEffect(() => {
+    if (!processor) return;
     let cancelled = false;
     setBusy(true);
     setPopover(null);
@@ -159,7 +223,13 @@ export function Reader({
     };
   }, [processor, chapter]);
 
-  const levelClass = useCallback((level: Level) => LEVEL_CLASS[level] ?? null, []);
+  const levelClass = useCallback(
+    (level: Level) => {
+      if (!shouldHighlightLevel(level, highlightMode)) return null;
+      return LEVEL_CLASS[level] ?? null;
+    },
+    [highlightMode],
+  );
 
   const handleWordClick = useCallback(
     (token: AnalyzedToken, pos: { x: number; y: number }) => {
@@ -267,6 +337,25 @@ export function Reader({
               </option>
             ))}
           </select>
+          <span
+            className="flex shrink-0 items-center overflow-hidden rounded border border-gray-300 dark:border-gray-600"
+            title="Which words get underlined"
+          >
+            {HIGHLIGHT_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => changeHighlightMode(mode)}
+                className={`px-2 py-1 text-xs ${
+                  highlightMode === mode
+                    ? "bg-gray-200 font-semibold dark:bg-gray-700"
+                    : "bg-white dark:bg-gray-800"
+                }`}
+              >
+                {HIGHLIGHT_LABEL[mode]}
+              </button>
+            ))}
+          </span>
           <button
             type="button"
             onClick={() => setReadingMode((m) => (m === "horizontal" ? "vertical" : "horizontal"))}
