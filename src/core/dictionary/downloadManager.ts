@@ -1,7 +1,7 @@
 import type { DictionaryEntry, LanguageCode } from "../types";
 import { consumeNdJsonStream } from "./ndjson";
 import type { PackInfo } from "./pack";
-import { DICTIONARY_PACKS, packUrl } from "./packs";
+import { DICTIONARY_PACKS, packUrl, type PackDefinition } from "./packs";
 import { getDictionaryStore } from "./persistentStore";
 
 export interface DownloadProgress {
@@ -11,16 +11,24 @@ export interface DownloadProgress {
   phase: "download" | "write";
 }
 
+/** Key identifying a specific pack: "ja:JMDict", "en:WordNet", etc. */
+export type PackKey = string;
+
 interface DownloadManagerState {
-  infos: Partial<Record<LanguageCode, PackInfo>>;
-  progress: Partial<Record<LanguageCode, DownloadProgress>>;
-  errors: Partial<Record<LanguageCode, string>>;
+  infos: Partial<Record<PackKey, PackInfo>>;
+  progress: Partial<Record<PackKey, DownloadProgress>>;
+  errors: Partial<Record<PackKey, string>>;
 }
 
 type Listener = (state: DownloadManagerState) => void;
 
 const BATCH_SIZE = 500;
 const PROGRESS_INTERVAL_MS = 200;
+
+/** Create a stable key for a pack definition. */
+export function packKey(def: PackDefinition): PackKey {
+  return `${def.language}:${def.source}`;
+}
 
 /**
  * Module-level singleton that owns dictionary pack download/import/delete state.
@@ -30,7 +38,7 @@ const PROGRESS_INTERVAL_MS = 200;
 class DownloadManager {
   private state: DownloadManagerState = { infos: {}, progress: {}, errors: {} };
   private listeners = new Set<Listener>();
-  private controllers = new Map<LanguageCode, AbortController>();
+  private controllers = new Map<PackKey, AbortController>();
   private lastProgressUpdate = 0;
 
   subscribe(listener: Listener): () => void {
@@ -50,45 +58,51 @@ class DownloadManager {
   }
 
   async refresh(languages: readonly LanguageCode[]): Promise<void> {
-    const infos: Partial<Record<LanguageCode, PackInfo>> = {};
+    const infos: Partial<Record<PackKey, PackInfo>> = {};
     for (const lang of languages) {
-      const store = getDictionaryStore(lang);
-      infos[lang] = await store.packInfo();
+      const packs = DICTIONARY_PACKS[lang] ?? [];
+      for (const def of packs) {
+        const key = packKey(def);
+        const store = getDictionaryStore(lang);
+        infos[key] = await store.packInfo(def.source);
+      }
     }
     this.state = { ...this.state, infos: { ...this.state.infos, ...infos } };
     this.emit();
   }
 
-  private setProgress(lang: LanguageCode, value: DownloadProgress | undefined) {
+  private setProgress(key: PackKey, _lang: LanguageCode, value: DownloadProgress | undefined) {
     const now = Date.now();
     if (value && now - this.lastProgressUpdate < PROGRESS_INTERVAL_MS) return;
     this.lastProgressUpdate = now;
     this.state = {
       ...this.state,
-      progress: { ...this.state.progress, [lang]: value },
+      progress: { ...this.state.progress, [key]: value },
     };
     this.emit();
   }
 
-  private setError(lang: LanguageCode, message: string | undefined) {
+  private setError(key: PackKey, message: string | undefined) {
     this.state = {
       ...this.state,
-      errors: { ...this.state.errors, [lang]: message },
+      errors: { ...this.state.errors, [key]: message },
     };
     this.emit();
   }
 
-  private setInfo(lang: LanguageCode, info: PackInfo | undefined) {
+  private setInfo(key: PackKey, info: PackInfo | undefined) {
     this.state = {
       ...this.state,
-      infos: { ...this.state.infos, [lang]: info },
+      infos: { ...this.state.infos, [key]: info },
     };
     this.emit();
   }
 
   private async streamIntoStore(
     language: LanguageCode,
+    source: string,
     stream: ReadableStream<Uint8Array>,
+    key: PackKey,
     total?: number,
   ): Promise<{ count: number; bytes: number }> {
     const store = getDictionaryStore(language);
@@ -100,15 +114,15 @@ class DownloadManager {
       if (pending.length === 0) return;
       const batch = pending;
       pending = [];
-      await store.bulkPut(batch);
+      await store.bulkPut(batch, source);
       written += batch.length;
-      this.setProgress(language, { received, total, count: written, phase: "write" });
+      this.setProgress(key, language, { received, total, count: written, phase: "write" });
     };
 
     const result = await consumeNdJsonStream(stream, {
       onProgress: (bytes) => {
         received = bytes;
-        this.setProgress(language, {
+        this.setProgress(key, language, {
           received,
           total,
           count: written,
@@ -124,32 +138,31 @@ class DownloadManager {
     return { count: result.count, bytes: result.bytes };
   }
 
-  async download(language: LanguageCode): Promise<void> {
-    const def = DICTIONARY_PACKS[language];
-    if (!def) return;
-    const store = getDictionaryStore(language);
+  async download(def: PackDefinition): Promise<void> {
+    const key = packKey(def);
+    const store = getDictionaryStore(def.language);
     const controller = new AbortController();
-    this.controllers.set(language, controller);
-    this.setProgress(language, { received: 0, count: 0, phase: "download" });
-    this.setError(language, undefined);
+    this.controllers.set(key, controller);
+    this.setProgress(key, def.language, { received: 0, count: 0, phase: "download" });
+    this.setError(key, undefined);
     try {
       const res = await fetch(packUrl(def), { signal: controller.signal });
       if (!res.ok || !res.body) {
         throw new Error(`Download failed (HTTP ${res.status})`);
       }
       const total = Number(res.headers.get("Content-Length") || 0) || undefined;
-      const { count, bytes } = await this.streamIntoStore(language, res.body, total);
+      const { count, bytes } = await this.streamIntoStore(def.language, def.source, res.body, key, total);
       await store.installPack({
-        language,
+        language: def.language,
         source: def.source,
         version: def.version,
         count,
         sizeBytes: bytes,
         downloadedAt: Date.now(),
       });
-      this.setProgress(language, undefined);
-      this.setInfo(language, {
-        language,
+      this.setProgress(key, def.language, undefined);
+      this.setInfo(key, {
+        language: def.language,
         source: def.source,
         version: def.version,
         count,
@@ -157,32 +170,34 @@ class DownloadManager {
         downloadedAt: Date.now(),
       });
     } catch (err) {
-      this.setProgress(language, undefined);
+      this.setProgress(key, def.language, undefined);
       if (!controller.signal.aborted) {
-        this.setError(language, err instanceof Error ? err.message : String(err));
+        this.setError(key, err instanceof Error ? err.message : String(err));
       }
     } finally {
-      this.controllers.delete(language);
+      this.controllers.delete(key);
     }
   }
 
-  cancel(language: LanguageCode): void {
-    this.controllers.get(language)?.abort();
+  cancel(key: PackKey): void {
+    this.controllers.get(key)?.abort();
   }
 
-  async remove(language: LanguageCode): Promise<void> {
-    const store = getDictionaryStore(language);
-    await store.removePack();
-    this.setInfo(language, undefined);
-    this.setError(language, undefined);
+  async remove(def: PackDefinition): Promise<void> {
+    const key = packKey(def);
+    const store = getDictionaryStore(def.language);
+    await store.removePack(def.source);
+    this.setInfo(key, undefined);
+    this.setError(key, undefined);
   }
 
   async importFile(language: LanguageCode, file: File): Promise<void> {
+    const key = `import:${language}:${file.name}`;
     const store = getDictionaryStore(language);
-    this.setProgress(language, { received: 0, count: 0, phase: "download" });
-    this.setError(language, undefined);
+    this.setProgress(key, language, { received: 0, count: 0, phase: "download" });
+    this.setError(key, undefined);
     try {
-      const { count, bytes } = await this.streamIntoStore(language, file.stream());
+      const { count, bytes } = await this.streamIntoStore(language, file.name, file.stream(), key);
       await store.installPack({
         language,
         source: file.name,
@@ -191,8 +206,8 @@ class DownloadManager {
         sizeBytes: bytes,
         downloadedAt: Date.now(),
       });
-      this.setProgress(language, undefined);
-      this.setInfo(language, {
+      this.setProgress(key, language, undefined);
+      this.setInfo(key, {
         language,
         source: file.name,
         version: "local",
@@ -201,8 +216,8 @@ class DownloadManager {
         downloadedAt: Date.now(),
       });
     } catch (err) {
-      this.setProgress(language, undefined);
-      this.setError(language, err instanceof Error ? err.message : String(err));
+      this.setProgress(key, language, undefined);
+      this.setError(key, err instanceof Error ? err.message : String(err));
     }
   }
 }

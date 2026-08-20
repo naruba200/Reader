@@ -15,5 +15,8 @@ export { consumeNdJsonStream } from "./ndjson";
 export { parsePackLine, formatBytes, PACK_FILE_EXT } from "./pack";
 export type { PackInfo, WordIndexRecord } from "./pack";
 export { DICTIONARY_PACKS, packUrl, SUPPORTED_DICT_LANGUAGES } from "./packs";
+export type { PackDefinition } from "./packs";
 export { useDictionaryManager } from "./hooks";
 export type { DownloadProgress, DictionaryManager } from "./hooks";
+export { packKey } from "./downloadManager";
+export type { PackKey } from "./downloadManager";

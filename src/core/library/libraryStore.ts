@@ -15,6 +15,9 @@ export interface StoredBookMeta {
   fileName: string;
   chapters: number;
   addedAt: number;
+  author?: string;
+  coverUrl?: string;
+  lastReadAt?: number;
 }
 
 /** Last reading position within a book, keyed by book id. */
@@ -92,6 +95,8 @@ export class LibraryStore {
       fileName,
       chapters: doc.chapters.length,
       addedAt: Date.now(),
+      author: doc.author,
+      coverUrl: doc.coverUrl,
     };
     await this.withStores([STORE_META, STORE_DOCS], "readwrite", (get) => {
       get(STORE_META).put(meta);
@@ -131,8 +136,18 @@ export class LibraryStore {
 
   async saveProgress(id: string, chapterIndex: number, pageIndex: number): Promise<void> {
     const progress: StoredProgress = { id, chapterIndex, pageIndex, updatedAt: Date.now() };
-    await this.withStores([STORE_PROGRESS], "readwrite", (get) => {
+    await this.withStores([STORE_PROGRESS, STORE_META], "readwrite", (get) => {
       get(STORE_PROGRESS).put(progress);
+      // Also update lastReadAt on the meta record for sorting.
+      const metaStore = get(STORE_META);
+      const req = metaStore.get(id);
+      req.onsuccess = () => {
+        const meta = req.result as StoredBookMeta | undefined;
+        if (meta) {
+          meta.lastReadAt = Date.now();
+          metaStore.put(meta);
+        }
+      };
       return Promise.resolve();
     });
   }

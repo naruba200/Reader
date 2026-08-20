@@ -18,6 +18,7 @@ export interface WordIndexRecord {
   lang: LanguageCode;
   word: string;
   reading?: string;
+  source?: string;
 }
 
 /**

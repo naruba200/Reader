@@ -36,8 +36,8 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.put(entry);
   }
 
-  async bulkPut(entries: Iterable<DictionaryEntry>): Promise<void> {
-    await this.backend.bulkPut(entries);
+  async bulkPut(entries: Iterable<DictionaryEntry>, source?: string): Promise<void> {
+    await this.backend.bulkPut(entries, source);
   }
 
   async size(): Promise<number> {
@@ -49,8 +49,8 @@ export class PersistentDictionaryStore implements DictionaryStore {
     this.searchIndex = undefined;
   }
 
-  async packInfo(): Promise<PackInfo | undefined> {
-    return this.backend.getPackInfo();
+  async packInfo(source?: string): Promise<PackInfo | undefined> {
+    return this.backend.getPackInfo(source);
   }
 
   async installPack(info: PackInfo): Promise<void> {
@@ -58,8 +58,8 @@ export class PersistentDictionaryStore implements DictionaryStore {
     this.searchIndex = undefined;
   }
 
-  async removePack(): Promise<void> {
-    await this.backend.deletePack();
+  async removePack(source?: string): Promise<void> {
+    await this.backend.deletePack(source);
     this.searchIndex = undefined;
   }
 

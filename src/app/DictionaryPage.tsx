@@ -7,6 +7,8 @@ import {
   getDictionaryStore,
   useDictionaryManager,
 } from "../core/dictionary";
+import { packKey } from "../core/dictionary/downloadManager";
+import type { PackDefinition } from "../core/dictionary/packs";
 import { EntryCard } from "../reader/EntryCard";
 
 export interface DictionaryPageProps {
@@ -210,7 +212,14 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
             <section>
               <h2 className="mb-2 text-sm font-semibold">Dictionary packs</h2>
               {SUPPORTED.map((lang) => (
-                <PackCard key={lang} lang={lang} manager={manager} />
+                <div key={lang} className="mb-3">
+                  <h3 className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {LANG_LABEL[lang]}
+                  </h3>
+                  {(DICTIONARY_PACKS[lang] ?? []).map((def) => (
+                    <PackCard key={`${lang}:${def.source}`} def={def} manager={manager} />
+                  ))}
+                </div>
               ))}
             </section>
 
@@ -248,19 +257,19 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
 }
 
 function PackCard({
-  lang,
+  def,
   manager,
 }: {
-  lang: LanguageCode;
+  def: PackDefinition;
   manager: ReturnType<typeof useDictionaryManager>;
 }) {
-  const def = DICTIONARY_PACKS[lang];
-  const info = manager.infos[lang];
-  const prog = manager.progress[lang];
-  const error = manager.errors[lang];
-  const label = `${LANG_LABEL[lang]} (${def?.source ?? "bundled"})`;
+  const key = packKey(def);
+  const info = manager.infos[key];
+  const prog = manager.progress[key];
+  const error = manager.errors[key];
+  const label = def.source;
 
-  const importInputId = `dict-import-${lang}`;
+  const importInputId = `dict-import-${def.language}-${def.source}`;
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-800">
@@ -275,14 +284,14 @@ function PackCard({
                 : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300"
           }`}
         >
-          {prog ? "Downloading" : info ? "Installed" : "Bundled default"}
+          {prog ? "Downloading" : info ? "Installed" : "Not installed"}
         </span>
       </div>
 
       {info && (
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           v{info.version} · {info.count.toLocaleString()} entries · {formatBytes(info.sizeBytes)}
-          {info.source !== (def?.source ?? "") && ` · from ${info.source}`}
+          {info.source !== def.source && ` · from ${info.source}`}
         </p>
       )}
 
@@ -309,20 +318,18 @@ function PackCard({
       )}
 
       <div className="mt-2 flex flex-wrap gap-2">
-        {def && (
-          <button
-            type="button"
-            disabled={!!prog}
-            onClick={() => void manager.download(lang)}
-            className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
-          >
-            {info ? "Re-download" : "Download"} ({formatBytes(def.estimatedBytes)})
-          </button>
-        )}
+        <button
+          type="button"
+          disabled={!!prog}
+          onClick={() => void manager.download(def)}
+          className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+        >
+          {info ? "Re-download" : "Download"} ({formatBytes(def.estimatedBytes)})
+        </button>
         {prog && (
           <button
             type="button"
-            onClick={() => manager.cancel(lang)}
+            onClick={() => manager.cancel(key)}
             className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
           >
             Cancel
@@ -331,7 +338,7 @@ function PackCard({
         {info && (
           <button
             type="button"
-            onClick={() => void manager.remove(lang)}
+            onClick={() => void manager.remove(def)}
             className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/30"
           >
             Delete
@@ -350,7 +357,7 @@ function PackCard({
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) void manager.importFile(lang, file);
+            if (file) void manager.importFile(def.language, file);
             e.target.value = "";
           }}
         />

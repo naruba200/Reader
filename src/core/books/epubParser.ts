@@ -114,12 +114,33 @@ export class EpubParser implements BookParser {
       name.replace(/\.[^.]+$/, "");
     const language = detectLanguage(chapters.map((c) => c.text).join("\n"));
 
+    // Extract rich metadata from EPUB packaging.
+    const metadata = book.packaging?.metadata;
+    const author = (metadata?.creator as string) || undefined;
+    const description = (metadata?.description as string) || undefined;
+    const publisher = (metadata?.publisher as string) || undefined;
+    const date = (metadata as unknown as Record<string, unknown>)?.date as string | undefined;
+
+    // Extract cover image if available.
+    let coverUrl: string | undefined;
+    try {
+      const url = await book.coverUrl();
+      if (url) coverUrl = url;
+    } catch {
+      // Ignore — cover extraction is best-effort.
+    }
+
     return {
       id: title + ":" + chapters.length,
       title,
       language,
       format: "epub",
       chapters,
+      author,
+      description,
+      coverUrl,
+      publisher,
+      date,
     };
   }
 

@@ -345,6 +345,10 @@ export async function tokenizeJapanese(text: string): Promise<Token[]> {
       pos: t.pos,
       start: t.word_position - 1,
       length: t.surface_form.length,
+      posDetail: [t.pos_detail_1, t.pos_detail_2, t.pos_detail_3],
+      conjugatedType: t.conjugated_type,
+      conjugatedForm: t.conjugated_form,
+      reading: t.reading,
     });
   }
   return tokens;

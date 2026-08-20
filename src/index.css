@@ -55,3 +55,80 @@ body,
   margin-block-end: 1.5rem;
   margin-block-start: 0;
 }
+
+/* Page transition animations */
+@keyframes slide-out-left {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-30%); opacity: 0; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(30%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slide-out-right {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(30%); opacity: 0; }
+}
+@keyframes slide-in-left {
+  from { transform: translateX(-30%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.animate-slide-out-left {
+  animation: slide-out-left 200ms ease-out forwards;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 200ms ease-out forwards;
+}
+.animate-slide-out-right {
+  animation: slide-out-right 200ms ease-out forwards;
+}
+.animate-slide-in-left {
+  animation: slide-in-left 200ms ease-out forwards;
+}
+
+/* Reading filter presets */
+.filter-sepia {
+  filter: sepia(0.3) brightness(1.05);
+}
+.filter-warm {
+  filter: sepia(0.15) saturate(1.2) brightness(1.02);
+}
+.filter-dark-warm {
+  filter: sepia(0.2) brightness(0.95) saturate(0.9);
+}
+
+/* Footer icon button active state */
+.reader-icon-btn {
+  @apply flex items-center justify-center rounded-lg p-2.5 text-gray-500 transition-colors dark:text-gray-400;
+}
+.reader-icon-btn:hover {
+  @apply bg-gray-100 dark:bg-gray-800;
+}
+.reader-icon-btn.active {
+  @apply bg-gray-200 text-gray-900 dark:bg-gray-700 dark:text-gray-100;
+}
+
+/* Tap zone feedback */
+.tap-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  pointer-events: auto;
+}
+.tap-zone:active {
+  opacity: 1;
+}
+.tap-zone-left {
+  left: 0;
+  width: 15%;
+  background: linear-gradient(to right, rgba(0,0,0,0.05), transparent);
+}
+.tap-zone-right {
+  right: 0;
+  width: 15%;
+  background: linear-gradient(to left, rgba(0,0,0,0.05), transparent);
+}

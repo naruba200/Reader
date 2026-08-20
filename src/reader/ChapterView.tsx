@@ -30,13 +30,6 @@ const RATING_BADGE: Record<DifficultyRating, string> = {
   "Very Hard": "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
 };
 
-/**
- * Renders a chapter's (or one page's) content, one word per span so each token
- * can be styled by difficulty and clicked for lookup. Uses absolute offsets into
- * the raw text so styling stays in sync with the tokenizer. Images render as
- * standalone blocks at their flow position. Only the book's text is affected by
- * vertical reading mode; the header and images stay in horizontal layout.
- */
 export const ChapterView = memo(function ChapterView({
   chapter,
   tokens,
@@ -50,7 +43,6 @@ export const ChapterView = memo(function ChapterView({
   const text = chapter.text;
   const paragraphClass = vertical ? "leading-relaxed" : "mb-4 leading-relaxed";
 
-  // The content to render: the requested page, or the whole chapter.
   const items = useMemo(() => {
     if (page) return page.items;
     if (chapter.blocks && chapter.blocks.length > 0) return chapter.blocks;
@@ -95,6 +87,11 @@ export const ChapterView = memo(function ChapterView({
                 <span
                   key={`${node.start}:${node.length}`}
                   className={levelClass(node.token.level) ?? undefined}
+                  title={
+                    node.token.conjugatedType
+                      ? `${node.token.pos ?? ""} · ${node.token.conjugatedType} · ${node.token.conjugatedForm ?? ""}\nBase: ${node.token.lemma}${node.token.reading ? `\nReading: ${node.token.reading}` : ""}`
+                      : undefined
+                  }
                   onClick={
                     onWordClick
                       ? (e) => {

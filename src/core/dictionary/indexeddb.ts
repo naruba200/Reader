@@ -22,7 +22,7 @@ function openDb(dbName: string): Promise<IDBDatabase> {
         db.createObjectStore(STORE_ENTRIES, { keyPath: "key" });
       }
       if (!db.objectStoreNames.contains(STORE_PACKS)) {
-        db.createObjectStore(STORE_PACKS, { keyPath: "language" });
+        db.createObjectStore(STORE_PACKS, { keyPath: "key" });
       }
       if (!db.objectStoreNames.contains(STORE_INDEX)) {
         db.createObjectStore(STORE_INDEX, { keyPath: "key" });
@@ -68,6 +68,17 @@ const langKey = (lang: LanguageCode, key: string) => `${lang}:${key}`;
 const langRange = (lang: LanguageCode) =>
   IDBKeyRange.bound(langKey(lang, ""), langKey(lang, "\uffff"));
 
+/** Key for entry records: lang:source:normalizedWord */
+const entryKey = (lang: LanguageCode, source: string, word: string) =>
+  `${lang}:${source}:${word}`;
+
+/** Key for pack info records: lang:source */
+const packInfoKey = (lang: LanguageCode, source: string) => `${lang}:${source}`;
+
+/** Range for all entries of a given language+source. */
+const sourceRange = (lang: LanguageCode, source: string) =>
+  IDBKeyRange.bound(`${lang}:${source}:`, `${lang}:${source}:\uffff`);
+
 /** IndexedDB-backed storage. Only usable in browser contexts. */
 export class IndexedDbDictionaryStore {
   private dbPromise?: Promise<IDBDatabase>;
@@ -84,32 +95,46 @@ export class IndexedDbDictionaryStore {
     return this.dbPromise;
   }
 
-  async lookup(word: string): Promise<DictionaryEntry | undefined> {
+  async lookup(word: string, source?: string): Promise<DictionaryEntry | undefined> {
     const db = await this.db();
-    const key = langKey(this.language, normalizeKey(word, this.language));
-    const record = await run<{ key: string; entry: DictionaryEntry } | undefined>(
-      db,
-      STORE_ENTRIES,
-      "readonly",
-      (store) => store.get(key),
-    );
-    return record?.entry;
+    if (source) {
+      const key = entryKey(this.language, source, normalizeKey(word, this.language));
+      const record = await run<{ key: string; entry: DictionaryEntry } | undefined>(
+        db, STORE_ENTRIES, "readonly", (store) => store.get(key),
+      );
+      return record?.entry;
+    }
+    // Without source, search all sources for this language.
+    const normalized = normalizeKey(word, this.language);
+    // Try common sources in order of likelihood.
+    for (const src of ["JMDict", "KANJIDIC2", "Tae Kim's Grammar", "JLPT Grammar", "WordNet"]) {
+      const key = entryKey(this.language, src, normalized);
+      const record = await run<{ key: string; entry: DictionaryEntry } | undefined>(
+        db, STORE_ENTRIES, "readonly", (store) => store.get(key),
+      );
+      if (record?.entry) return record.entry;
+    }
+    return undefined;
   }
 
-  async put(entry: DictionaryEntry): Promise<void> {
-    await this.bulkPut([entry]);
+  async put(entry: DictionaryEntry, source = "default"): Promise<void> {
+    await this.bulkPut([entry], source);
   }
 
-  async bulkPut(entries: Iterable<DictionaryEntry>): Promise<void> {
+  async bulkPut(entries: Iterable<DictionaryEntry>, source = "default"): Promise<void> {
     const db = await this.db();
     const records = [...entries]
       .flatMap((e) => recordsFor(e, this.language))
-      .map((r) => ({ ...r, key: langKey(this.language, r.key) }));
+      .map((r) => ({
+        ...r,
+        key: entryKey(this.language, source, r.key),
+      }));
     const indexRecords: WordIndexRecord[] = records.map((r) => ({
       key: r.key,
       lang: this.language,
       word: r.entry.word,
       reading: r.reading,
+      source,
     }));
     if (records.length === 0) return;
     const BATCH = 1000;
@@ -144,27 +169,56 @@ export class IndexedDbDictionaryStore {
 
   // ----- pack metadata -----
 
-  async getPackInfo(): Promise<PackInfo | undefined> {
+  async getPackInfo(source?: string): Promise<PackInfo | undefined> {
     const db = await this.db();
-    return run<PackInfo | undefined>(
-      db,
-      STORE_PACKS,
-      "readonly",
-      (store) => store.get(this.language),
-    );
+    if (source) {
+      return run<PackInfo | undefined>(
+        db, STORE_PACKS, "readonly",
+        (store) => store.get(packInfoKey(this.language, source)),
+      );
+    }
+    // Without source, return first found pack info for this language.
+    const range = IDBKeyRange.bound(`${this.language}:`, `${this.language}:\uffff`);
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PACKS, "readonly");
+      const store = tx.objectStore(STORE_PACKS);
+      const req = store.openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        resolve(cursor ? (cursor.value as unknown as PackInfo) : undefined);
+        if (cursor) cursor.continue();
+      };
+      tx.onerror = () => reject(tx.error);
+    });
   }
 
   async putPackInfo(info: PackInfo): Promise<void> {
     const db = await this.db();
-    await run(db, STORE_PACKS, "readwrite", (store) => store.put(info));
+    const record = { ...info, key: packInfoKey(this.language, info.source) };
+    await run(db, STORE_PACKS, "readwrite", (store) => store.put(record));
   }
 
-  async deletePack(): Promise<void> {
+  async deletePack(source?: string): Promise<void> {
     const db = await this.db();
-    await Promise.all([
-      run(db, STORE_PACKS, "readwrite", (store) => store.delete(this.language)),
-      this.clear(),
-    ]);
+    if (source) {
+      // Delete specific source's entries and pack info.
+      const range = sourceRange(this.language, source);
+      await Promise.all([
+        runBatch(db, STORE_ENTRIES, (store) => store.delete(range)),
+        runBatch(db, STORE_INDEX, (store) => store.delete(range)),
+        run(db, STORE_PACKS, "readwrite", (store) =>
+          store.delete(packInfoKey(this.language, source)),
+        ),
+      ]);
+    } else {
+      // Delete all packs for this language.
+      const range = langRange(this.language);
+      await Promise.all([
+        runBatch(db, STORE_ENTRIES, (store) => store.delete(range)),
+        runBatch(db, STORE_INDEX, (store) => store.delete(range)),
+        runBatch(db, STORE_PACKS, (store) => store.delete(range)),
+      ]);
+    }
   }
 
   // ----- word search index -----

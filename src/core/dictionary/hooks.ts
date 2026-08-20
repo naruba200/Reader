@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import type { LanguageCode } from "../types";
 import { dictionaryManager } from "./downloadManager";
-import type { DownloadProgress } from "./downloadManager";
+import type { DownloadProgress, PackKey } from "./downloadManager";
 import type { PackInfo } from "./pack";
+import type { PackDefinition } from "./packs";
 
 export type { DownloadProgress };
 
 export interface DictionaryManager {
-  infos: Partial<Record<LanguageCode, PackInfo>>;
-  progress: Partial<Record<LanguageCode, DownloadProgress>>;
-  errors: Partial<Record<LanguageCode, string>>;
-  download: (language: LanguageCode) => Promise<void>;
-  cancel: (language: LanguageCode) => void;
-  remove: (language: LanguageCode) => Promise<void>;
+  infos: Partial<Record<PackKey, PackInfo>>;
+  progress: Partial<Record<PackKey, DownloadProgress>>;
+  errors: Partial<Record<PackKey, string>>;
+  download: (def: PackDefinition) => Promise<void>;
+  cancel: (key: PackKey) => void;
+  remove: (def: PackDefinition) => Promise<void>;
   importFile: (language: LanguageCode, file: File) => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -41,9 +42,9 @@ export function useDictionaryManager(
       infos: state.infos,
       progress: state.progress,
       errors: state.errors,
-      download: (language) => dictionaryManager.download(language),
-      cancel: (language) => dictionaryManager.cancel(language),
-      remove: (language) => dictionaryManager.remove(language),
+      download: (def) => dictionaryManager.download(def),
+      cancel: (key) => dictionaryManager.cancel(key),
+      remove: (def) => dictionaryManager.remove(def),
       importFile: (language, file) => dictionaryManager.importFile(language, file),
       refresh: () => dictionaryManager.refresh(languages),
     }),

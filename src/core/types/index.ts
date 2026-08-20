@@ -16,6 +16,14 @@ export interface Token {
   pos?: string;
   start: number;
   length: number;
+  /** Fine-grained POS sub-classifications from Kuromoji (pos_detail_1/2/3). */
+  posDetail?: string[];
+  /** Conjugation type (e.g. 五段・カ行) from Kuromoji. */
+  conjugatedType?: string;
+  /** Conjugation form (e.g. 連用形, 仮定形) from Kuromoji. */
+  conjugatedForm?: string;
+  /** Kana reading from Kuromoji. */
+  reading?: string;
 }
 
 export interface AnalyzedToken extends Token {
@@ -74,6 +82,11 @@ export interface BookDocument {
   language: LanguageCode;
   format: BookFormat;
   chapters: BookChapter[];
+  author?: string;
+  description?: string;
+  coverUrl?: string;
+  publisher?: string;
+  date?: string;
 }
 
 export interface DictionaryEntry {
