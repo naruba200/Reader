@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
   appId: "com.smartreader.app",
-  appName: "Smart Reader",
+  appName: "NoweRead",
   webDir: "dist",
   android: {
     allowMixedContent: false,
