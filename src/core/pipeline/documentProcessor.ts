@@ -99,11 +99,17 @@ export class DocumentProcessor {
     options: AnalyzeOptions,
   ): Promise<AnalyzedToken[]> {
     const out: AnalyzedToken[] = [];
+    const isJapanese = this.adapter.language === "ja";
     for (const token of tokens) {
       const level = this.levelDb.lookup(token.lemma);
+      let finalLevel = level ?? "UNKNOWN";
+      // Classify UNKNOWN words by frequency heuristics (Japanese only)
+      if (finalLevel === "UNKNOWN" && isJapanese) {
+        finalLevel = this.classifyFrequency(token);
+      }
       out.push({
         ...token,
-        level: level ?? "UNKNOWN",
+        level: finalLevel,
       });
     }
 
@@ -116,5 +122,21 @@ export class DocumentProcessor {
       }
     }
     return out;
+  }
+
+  private classifyFrequency(token: Token): "FREQ_COMMON" | "FREQ_UNCOMMON" | "FREQ_RARE" {
+    const surface = token.surface;
+    const len = surface.length;
+    // Count kanji characters (CJK unified ideographs)
+    const kanjiCount = (surface.match(/[\u4e00-\u9fff]/g) || []).length;
+    const kanjiRatio = len > 0 ? kanjiCount / len : 0;
+    // Pure kana or very short words are common
+    if (len <= 3 && kanjiRatio === 0) return "FREQ_COMMON";
+    // Short words with some kanji
+    if (len <= 4 && kanjiRatio < 0.5) return "FREQ_COMMON";
+    // Medium length or moderate kanji density
+    if (len <= 6 && kanjiRatio < 0.7) return "FREQ_UNCOMMON";
+    // Long words or high kanji density
+    return "FREQ_RARE";
   }
 }

@@ -10,6 +10,9 @@ const LEVEL_RANK: Record<Level, number> = {
   N5: 1, N4: 2, N3: 3, N2: 4, N1: 5,
   HSK1: 1, HSK2: 2, HSK3: 3, HSK4: 4, HSK5: 5, HSK6: 6,
   UNKNOWN: 0,
+  FREQ_COMMON: 1,
+  FREQ_UNCOMMON: 2,
+  FREQ_RARE: 3,
 };
 
 export interface DifficultyWeights {

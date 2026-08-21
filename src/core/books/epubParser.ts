@@ -125,7 +125,19 @@ export class EpubParser implements BookParser {
     let coverUrl: string | undefined;
     try {
       const url = await book.coverUrl();
-      if (url) coverUrl = url;
+      if (url) {
+        if (url.startsWith("blob:")) {
+          const response = await fetch(url);
+          const blob = await response.blob();
+          coverUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+        } else {
+          coverUrl = url;
+        }
+      }
     } catch {
       // Ignore — cover extraction is best-effort.
     }

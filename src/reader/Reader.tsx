@@ -17,6 +17,14 @@ import { ChapterView } from "./ChapterView";
 import { WordPopover, type PopoverState } from "./WordPopover";
 import { paginateChapter } from "./pages";
 
+/** A grammar pattern match in the text. */
+export interface GrammarMatch {
+  start: number;
+  end: number;
+  pattern: string;
+  definition: string;
+}
+
 export interface ReaderProps {
   book: BookDocument;
   onClose: () => void;
@@ -56,8 +64,8 @@ export function shouldHighlightLevel(level: Level, mode: HighlightMode): boolean
   if (mode === "grammar") return true;
   switch (mode) {
     case "all": return true;
-    case "unknown": return level === "UNKNOWN";
-    case "hard": return level === "UNKNOWN" || levelRank(level) >= 4;
+    case "unknown": return level === "UNKNOWN" || level === "FREQ_COMMON" || level === "FREQ_UNCOMMON" || level === "FREQ_RARE";
+    case "hard": return level === "UNKNOWN" || level === "FREQ_RARE" || levelRank(level) >= 4;
     case "off": return false;
   }
 }
@@ -75,6 +83,9 @@ const LEVEL_CLASS: Partial<Record<Level, string>> = {
   N2: "underline decoration-orange-400 decoration-2 underline-offset-2",
   N1: "underline decoration-red-600 decoration-2 underline-offset-2",
   UNKNOWN: "underline decoration-purple-500 decoration-2 underline-offset-2 decoration-dashed",
+  FREQ_COMMON: "underline decoration-sky-400 decoration-2 underline-offset-2",
+  FREQ_UNCOMMON: "underline decoration-blue-500 decoration-2 underline-offset-2",
+  FREQ_RARE: "underline decoration-indigo-600 decoration-2 underline-offset-2 decoration-dotted",
 };
 
 type ReadingFilter = "none" | "sepia" | "warm" | "dark-warm";
@@ -96,6 +107,17 @@ const FILTER_LABEL: Record<ReadingFilter, string> = {
   warm: "Warm",
   "dark-warm": "Dark warm",
 };
+
+type NavigationMode = "tap" | "swipe" | "both";
+const NAV_MODE_KEY = "smart-reader-navigation-mode";
+
+function loadNavigationMode(): NavigationMode {
+  try {
+    const v = localStorage.getItem(NAV_MODE_KEY);
+    if (v === "tap" || v === "swipe" || v === "both") return v;
+  } catch { /* ignore */ }
+  return "both";
+}
 
 export function Reader({
   book,
@@ -129,6 +151,7 @@ export function Reader({
   const [levelDb, setLevelDb] = useState<LevelDb | null>(null);
   const [highlightMode, setHighlightMode] = useState<HighlightMode>(loadHighlightMode);
   const [readingFilter, setReadingFilter] = useState<ReadingFilter>(loadReadingFilter);
+  const [navigationMode, setNavigationMode] = useState<NavigationMode>(loadNavigationMode);
 
   // UI state
   const [controlsVisible, setControlsVisible] = useState(false);
@@ -139,10 +162,20 @@ export function Reader({
   // TTS state
   const [ttsPlaying, setTtsPlaying] = useState(false);
   const [ttsPaused, setTtsPaused] = useState(false);
+  const [ttsSentenceIndex, setTtsSentenceIndex] = useState(-1);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const sentencesRef = useRef<string[]>([]);
 
-  // Auto-hide timer
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Grammar pattern matches
+  const [grammarMatches, setGrammarMatches] = useState<GrammarMatch[]>([]);
+
+  // Controls visibility management
+  const toggleControls = useCallback(() => {
+    setControlsVisible((v) => {
+      if (v) setShowFontSizeBar(false);
+      return !v;
+    });
+  }, []);
 
   const changeHighlightMode = useCallback((mode: HighlightMode) => {
     setHighlightMode(mode);
@@ -166,24 +199,24 @@ export function Reader({
     });
   }, []);
 
-  // Controls visibility management
-  const toggleControls = useCallback(() => {
-    setControlsVisible((v) => {
-      if (!v) {
-        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = setTimeout(() => setControlsVisible(false), 5000);
-      }
-      return !v;
+  const changeNavigationMode = useCallback(() => {
+    setNavigationMode((prev) => {
+      const cycle: NavigationMode[] = ["both", "tap", "swipe"];
+      const idx = cycle.indexOf(prev);
+      const next = cycle[(idx + 1) % cycle.length];
+      try { localStorage.setItem(NAV_MODE_KEY, next); } catch { /* ignore */ }
+      return next;
     });
   }, []);
 
-  useEffect(() => {
-    return () => { if (hideTimerRef.current) clearTimeout(hideTimerRef.current); };
-  }, []);
-
   // Popover close handler for Android back
+  const popoverCloseTimeRef = useRef(0);
   useEffect(() => {
-    if (!popover) { onRegisterCloseHandler?.(null); return; }
+    if (!popover) {
+      onRegisterCloseHandler?.(null);
+      popoverCloseTimeRef.current = Date.now();
+      return;
+    }
     onRegisterCloseHandler?.(() => setPopover(null));
     return () => onRegisterCloseHandler?.(null);
   }, [popover, onRegisterCloseHandler]);
@@ -229,6 +262,47 @@ export function Reader({
       .catch((err) => { console.error("Analysis failed", err); setBusy(false); });
     return () => { cancelled = true; };
   }, [processor, chapter]);
+
+  // Grammar pattern detection
+  useEffect(() => {
+    if (highlightMode !== "grammar" || book.language !== "ja") {
+      setGrammarMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const dict = getDictionaryStore(book.language);
+    const grammarSources = ["Tae Kim's Grammar", "JLPT Grammar"];
+    void (async () => {
+      const matches: GrammarMatch[] = [];
+      const text = chapter.text;
+      const searchIndex = await dict.getSearchIndex();
+      const grammarEntries = searchIndex.filter((r) =>
+        r.source && grammarSources.includes(r.source)
+      );
+      const seenWords = new Set<string>();
+      for (const rec of grammarEntries) {
+        if (seenWords.has(rec.word)) continue;
+        seenWords.add(rec.word);
+        const pattern = rec.word.replace(/^[～〜]/, "").replace(/[～〜]$/, "");
+        if (!pattern || pattern.length < 2) continue;
+        let searchFrom = 0;
+        while (searchFrom < text.length) {
+          const idx = text.indexOf(pattern, searchFrom);
+          if (idx === -1) break;
+          matches.push({
+            start: idx,
+            end: idx + pattern.length,
+            pattern: rec.word,
+            definition: "",
+          });
+          searchFrom = idx + pattern.length;
+        }
+      }
+      matches.sort((a, b) => a.start - b.start);
+      if (!cancelled) setGrammarMatches(matches);
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [highlightMode, chapter, book.language]);
 
   const levelClass = useCallback(
     (level: Level) => {
@@ -299,6 +373,11 @@ export function Reader({
   const handleContentClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (popover) return;
+      if (Date.now() - popoverCloseTimeRef.current < 300) return;
+      if (navigationMode === "swipe") {
+        toggleControls();
+        return;
+      }
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const ratio = x / rect.width;
@@ -306,7 +385,7 @@ export function Reader({
       else if (ratio > 0.85) goNext();
       else toggleControls();
     },
-    [goPrev, goNext, toggleControls, popover],
+    [goPrev, goNext, toggleControls, popover, navigationMode],
   );
 
   // Swipe handling
@@ -320,6 +399,7 @@ export function Reader({
 
   const handleTouchEnd = useCallback(
     (e: TouchEvent<HTMLDivElement>) => {
+      if (navigationMode === "tap") return;
       const start = touchStartRef.current;
       touchStartRef.current = null;
       if (!start) return;
@@ -332,26 +412,54 @@ export function Reader({
       if (dx < 0) goNext();
       else goPrev();
     },
-    [goNext, goPrev],
+    [goNext, goPrev, navigationMode],
   );
 
-  // TTS
-  const startTTS = useCallback(() => {
-    const text = chapter.text;
-    if (!text) return;
+  // TTS - sentence-level sequential speaking
+  const speakSentence = useCallback((sentences: string[], index: number) => {
+    if (index >= sentences.length) {
+      setTtsPlaying(false);
+      setTtsPaused(false);
+      setTtsSentenceIndex(-1);
+      return;
+    }
+    const text = sentences[index];
+    if (!text.trim()) {
+      speakSentence(sentences, index + 1);
+      return;
+    }
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = book.language === "ja" ? "ja-JP" :
       book.language === "en" ? "en-US" : `${book.language}-${book.language.toUpperCase()}`;
     const voices = speechSynthesis.getVoices();
     const langVoice = voices.find((v) => v.lang.startsWith(book.language));
     if (langVoice) utterance.voice = langVoice;
-    utterance.onend = () => { setTtsPlaying(false); setTtsPaused(false); };
-    utterance.onerror = () => { setTtsPlaying(false); setTtsPaused(false); };
+    utterance.onend = () => {
+      speakSentence(sentences, index + 1);
+    };
+    utterance.onerror = (e) => {
+      if (e.error !== "canceled") {
+        console.warn("TTS error", e.error);
+      }
+      setTtsPlaying(false);
+      setTtsPaused(false);
+      setTtsSentenceIndex(-1);
+    };
     utteranceRef.current = utterance;
+    setTtsSentenceIndex(index);
     speechSynthesis.speak(utterance);
+  }, [book.language]);
+
+  const startTTS = useCallback(() => {
+    const text = chapter.text;
+    if (!text) return;
+    const sentences = text.split(/(?<=[。！？.!?])\s*/).filter((s) => s.trim());
+    if (sentences.length === 0) return;
+    sentencesRef.current = sentences;
     setTtsPlaying(true);
     setTtsPaused(false);
-  }, [chapter.text, book.language]);
+    speakSentence(sentences, 0);
+  }, [chapter.text, speakSentence]);
 
   const pauseTTS = useCallback(() => { speechSynthesis.pause(); setTtsPaused(true); }, []);
   const resumeTTS = useCallback(() => { speechSynthesis.resume(); setTtsPaused(false); }, []);
@@ -359,6 +467,7 @@ export function Reader({
     speechSynthesis.cancel();
     setTtsPlaying(false);
     setTtsPaused(false);
+    setTtsSentenceIndex(-1);
     utteranceRef.current = null;
   }, []);
 
@@ -368,7 +477,6 @@ export function Reader({
   const readChars = useMemo(() => {
     let chars = 0;
     for (let i = 0; i < chapterIndex; i++) chars += book.chapters[i].text.length;
-    // Compute offset within current chapter from page items
     if (page) {
       for (const item of page.items) {
         if (item.kind === "text") {
@@ -385,17 +493,89 @@ export function Reader({
     readingFilter === "warm" ? "filter-warm" :
     readingFilter === "dark-warm" ? "filter-dark-warm" : "";
 
+  const chromeClass =
+    readingFilter === "sepia" ? "bg-[rgb(245,241,232)] dark:bg-[rgb(30,25,20)]" :
+    readingFilter === "warm" ? "bg-[rgb(255,249,235)] dark:bg-[rgb(35,30,22)]" :
+    readingFilter === "dark-warm" ? "bg-[rgb(240,235,225)] dark:bg-[rgb(25,22,18)]" : "bg-white dark:bg-gray-900";
+
   const isVertical = readingMode === "vertical";
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      {/* Progress bar (always visible at top) */}
-      <div className="absolute top-0 left-0 right-0 z-30 h-1 bg-gray-200/50 dark:bg-gray-700/50">
+      {/* Page counter (always visible at top) */}
+      <div className={`absolute top-0 left-0 right-0 z-30 flex items-center justify-center py-0.5 text-xs text-gray-500 ${chromeClass}`}>
+        Page {pageIndex + 1} / {pages.length}
+      </div>
+      {/* Progress bar */}
+      <div className="absolute top-5 left-0 right-0 z-30 h-1 bg-gray-200">
         <div
           className="h-full bg-blue-500 transition-all duration-300"
           style={{ width: `${progress * 100}%` }}
         />
       </div>
+
+      {/* Navigation bar (visible when controls are shown) */}
+      {controlsVisible && (
+        <div className={`absolute top-6 left-0 right-0 z-30 flex items-center justify-center gap-4 border-b border-gray-200 py-1 ${chromeClass}`}>
+          <button
+            type="button"
+            onClick={() => {
+              if (chapterIndex > 0) {
+                setChapterIndex(chapterIndex - 1);
+                setPageIndex(0);
+              }
+            }}
+            disabled={chapterIndex === 0}
+            className="reader-icon-btn disabled:opacity-30"
+            title="Previous chapter"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={goPrev}
+            disabled={chapterIndex === 0 && pageIndex === 0}
+            className="reader-icon-btn disabled:opacity-30"
+            title="Previous page"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            {chapterIndex + 1}/{book.chapters.length}
+          </span>
+          <button
+            type="button"
+            onClick={goNext}
+            disabled={chapterIndex === book.chapters.length - 1 && pageIndex === pages.length - 1}
+            className="reader-icon-btn disabled:opacity-30"
+            title="Next page"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (chapterIndex < book.chapters.length - 1) {
+                setChapterIndex(chapterIndex + 1);
+                setPageIndex(0);
+              }
+            }}
+            disabled={chapterIndex === book.chapters.length - 1}
+            className="reader-icon-btn disabled:opacity-30"
+            title="Next chapter"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       {/* Reading content area */}
       <div
@@ -419,13 +599,16 @@ export function Reader({
             page={page}
             vertical={isVertical}
             fontSize={fontSize}
+            ttsSentenceIndex={ttsSentenceIndex}
+            ttsSentences={ttsPlaying ? sentencesRef.current : []}
+            grammarMatches={highlightMode === "grammar" ? grammarMatches : []}
           />
         )}
       </div>
 
       {/* Font size secondary bar */}
       {showFontSizeBar && (
-        <div className="absolute bottom-16 left-0 right-0 z-40 flex items-center justify-center gap-4 border-t border-gray-200 bg-white/90 px-4 py-2 backdrop-blur dark:border-gray-700 dark:bg-gray-900/90">
+        <div className={`absolute bottom-14 left-0 right-0 z-40 flex items-center justify-center gap-2 border-t border-gray-200 px-4 py-2 ${chromeClass}`}>
           <button
             type="button"
             onClick={() => changeFontSize(-1)}
@@ -452,7 +635,7 @@ export function Reader({
           controlsVisible ? "translate-y-0" : "translate-y-full"
         }`}
       >
-        <div className="flex items-center justify-around border-t border-gray-200 bg-white/90 px-2 py-1.5 backdrop-blur dark:border-gray-700 dark:bg-gray-900/90">
+        <div className={`flex items-center justify-around border-t border-gray-200 px-2 py-1.5 ${chromeClass}`}>
           {/* Back */}
           <button type="button" onClick={onClose} className="reader-icon-btn" title="Library">
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -568,6 +751,16 @@ export function Reader({
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
+          </button>
+
+          {/* Navigation mode */}
+          <button
+            type="button"
+            onClick={changeNavigationMode}
+            className={`reader-icon-btn ${navigationMode !== "both" ? "active" : ""}`}
+            title={`Nav: ${navigationMode}`}
+          >
+            <span className="text-xs font-bold">{navigationMode === "tap" ? "👆" : navigationMode === "swipe" ? "👋" : "👆👋"}</span>
           </button>
         </div>
       </div>

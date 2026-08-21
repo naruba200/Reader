@@ -125,7 +125,15 @@ export function App() {
       if (!parser) throw new Error(`Unsupported file: ${file.name}`);
       const doc = await parser.parse(file, file.name);
       const meta = await getLibraryStore().saveBook(doc, file.name);
-      setBooks((prev) => [...prev, meta]);
+      setBooks((prev) => {
+        const idx = prev.findIndex((b) => b.id === meta.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = meta;
+          return next;
+        }
+        return [...prev, meta];
+      });
       setActive({ id: meta.id, doc });
       setView("reader");
     } catch (err) {

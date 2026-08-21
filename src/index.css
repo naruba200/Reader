@@ -90,12 +90,24 @@ body,
 /* Reading filter presets */
 .filter-sepia {
   filter: sepia(0.3) brightness(1.05);
+  background-color: rgb(245 241 232);
+}
+.dark .filter-sepia {
+  background-color: rgb(30 25 20);
 }
 .filter-warm {
   filter: sepia(0.15) saturate(1.2) brightness(1.02);
+  background-color: rgb(255 249 235);
+}
+.dark .filter-warm {
+  background-color: rgb(35 30 22);
 }
 .filter-dark-warm {
   filter: sepia(0.2) brightness(0.95) saturate(0.9);
+  background-color: rgb(240 235 225);
+}
+.dark .filter-dark-warm {
+  background-color: rgb(25 22 18);
 }
 
 /* Footer icon button active state */

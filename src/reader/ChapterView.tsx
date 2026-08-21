@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import type {
   AnalyzedToken,
   BookChapter,
@@ -20,6 +20,12 @@ export interface ChapterViewProps {
   vertical?: boolean;
   /** Base font size in px applied to the chapter text. */
   fontSize?: number;
+  /** Index of the currently spoken sentence for TTS highlighting (-1 when not speaking). */
+  ttsSentenceIndex?: number;
+  /** Array of sentences being spoken by TTS. */
+  ttsSentences?: string[];
+  /** Grammar pattern matches to highlight. */
+  grammarMatches?: { start: number; end: number; pattern: string; definition: string }[];
 }
 
 const RATING_BADGE: Record<DifficultyRating, string> = {
@@ -39,6 +45,9 @@ export const ChapterView = memo(function ChapterView({
   page,
   vertical = false,
   fontSize,
+  ttsSentenceIndex = -1,
+  ttsSentences = [],
+  grammarMatches = [],
 }: ChapterViewProps) {
   const text = chapter.text;
   const paragraphClass = vertical ? "leading-relaxed" : "mb-4 leading-relaxed";
@@ -48,6 +57,39 @@ export const ChapterView = memo(function ChapterView({
     if (chapter.blocks && chapter.blocks.length > 0) return chapter.blocks;
     return [{ kind: "text" as const, start: 0, end: text.length }];
   }, [page, chapter.blocks, text.length]);
+
+  // Compute the character range of the currently spoken sentence for TTS highlighting
+  const ttsHighlightRange = useMemo(() => {
+    if (ttsSentenceIndex < 0 || ttsSentences.length === 0) return null;
+    let offset = 0;
+    for (let i = 0; i < ttsSentences.length; i++) {
+      const len = ttsSentences[i].length;
+      if (i === ttsSentenceIndex) {
+        return { start: offset, end: offset + len };
+      }
+      offset += len;
+    }
+    return null;
+  }, [ttsSentenceIndex, ttsSentences]);
+
+  const isTtsHighlighted = useCallback(
+    (nodeStart: number, nodeLength: number) => {
+      if (!ttsHighlightRange) return false;
+      const nodeEnd = nodeStart + nodeLength;
+      return nodeStart < ttsHighlightRange.end && nodeEnd > ttsHighlightRange.start;
+    },
+    [ttsHighlightRange],
+  );
+
+  const grammarMatchFor = useCallback(
+    (nodeStart: number, nodeLength: number) => {
+      const nodeEnd = nodeStart + nodeLength;
+      return grammarMatches.find(
+        (m) => nodeStart < m.end && nodeEnd > m.start,
+      );
+    },
+    [grammarMatches],
+  );
 
   const { allNodes, textNodes, imageNodes } = useMemo(() => {
     const all: React.ReactNode[] = [];
@@ -82,19 +124,29 @@ export const ChapterView = memo(function ChapterView({
       const textNode = (
         <p key={`t:${bi}`} className={paragraphClass}>
           {paragraphRangesForBlock(text, block.start, block.end).map((para) =>
-            buildParagraphNodes(text, para, tokens).map((node) =>
-              node.token ? (
+            buildParagraphNodes(text, para, tokens).map((node) => {
+              const grammarMatch = node.token ? grammarMatchFor(node.start, node.length) : undefined;
+              const ttsHighlight = isTtsHighlighted(node.start, node.length);
+              const grammarHighlight = !!grammarMatch;
+              const combinedClass = [
+                node.token ? levelClass(node.token.level) : undefined,
+                ttsHighlight ? "bg-yellow-200 dark:bg-yellow-800 rounded px-0.5" : undefined,
+                grammarHighlight ? "bg-blue-100 dark:bg-blue-900 rounded px-0.5 border border-blue-300 dark:border-blue-700" : undefined,
+              ].filter(Boolean).join(" ") || undefined;
+              const title = grammarMatch
+                ? `${grammarMatch.pattern}\n${grammarMatch.definition || ""}`
+                : node.token?.conjugatedType
+                  ? `${node.token.pos ?? ""} · ${node.token.conjugatedType} · ${node.token.conjugatedForm ?? ""}\nBase: ${node.token.lemma}${node.token.reading ? `\nReading: ${node.token.reading}` : ""}`
+                  : undefined;
+              return node.token ? (
                 <span
                   key={`${node.start}:${node.length}`}
-                  className={levelClass(node.token.level) ?? undefined}
-                  title={
-                    node.token.conjugatedType
-                      ? `${node.token.pos ?? ""} · ${node.token.conjugatedType} · ${node.token.conjugatedForm ?? ""}\nBase: ${node.token.lemma}${node.token.reading ? `\nReading: ${node.token.reading}` : ""}`
-                      : undefined
-                  }
+                  className={combinedClass}
+                  title={title}
                   onClick={
                     onWordClick
                       ? (e) => {
+                          e.stopPropagation();
                           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                           onWordClick(node.token!, {
                             x: rect.left + rect.width / 2,
@@ -107,9 +159,14 @@ export const ChapterView = memo(function ChapterView({
                   {node.text}
                 </span>
               ) : (
-                <span key={`${node.start}:${node.length}`}>{node.text}</span>
-              ),
-            ),
+                <span
+                  key={`${node.start}:${node.length}`}
+                  className={ttsHighlight || grammarHighlight ? combinedClass : undefined}
+                >
+                  {node.text}
+                </span>
+              );
+            }),
           )}
         </p>
       );
@@ -117,7 +174,7 @@ export const ChapterView = memo(function ChapterView({
       texts.push(textNode);
     });
     return { allNodes: all, textNodes: texts, imageNodes: images };
-  }, [items, text, tokens, paragraphClass, levelClass, onWordClick, vertical]);
+  }, [items, text, tokens, paragraphClass, levelClass, onWordClick, vertical, isTtsHighlighted, grammarMatchFor]);
 
   return (
     <article

@@ -38,6 +38,7 @@ export function EntryCard({
   onOpenInDictionary,
 }: EntryCardProps) {
   const [played, setPlayed] = useState(false);
+  const [readingDef, setReadingDef] = useState(false);
   const surface = word ?? entry?.word ?? "";
   const levelText = level && level !== "UNKNOWN" ? level : undefined;
 
@@ -48,6 +49,33 @@ export function EntryCard({
     speechSynthesis.cancel();
     speechSynthesis.speak(utter);
     setPlayed(true);
+  };
+
+  const speakDefinition = () => {
+    if (typeof speechSynthesis === "undefined" || !entry?.definition) return;
+    speechSynthesis.cancel();
+    const parts: string[] = [];
+    if (entry.readings && entry.readings.length > 0) {
+      parts.push(entry.readings.join(", "));
+    }
+    parts.push(entry.definition);
+    if (entry.examples) {
+      for (const ex of entry.examples.slice(0, 2)) {
+        parts.push(ex);
+      }
+    }
+    const utter = new SpeechSynthesisUtterance(parts.join(". "));
+    utter.lang = langForLevel(level);
+    utter.rate = 0.9;
+    speechSynthesis.speak(utter);
+    setReadingDef(true);
+    utter.onend = () => setReadingDef(false);
+  };
+
+  const stopReadingDef = () => {
+    if (typeof speechSynthesis === "undefined") return;
+    speechSynthesis.cancel();
+    setReadingDef(false);
   };
 
   return (
@@ -62,14 +90,30 @@ export function EntryCard({
             </div>
           )}
         </div>
-        <button
-          type="button"
-          onClick={speech}
-          className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
-          aria-label="Play pronunciation"
-        >
-          {played ? "🔊" : "🔈"}
-        </button>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={speech}
+            className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+            aria-label="Play pronunciation"
+          >
+            {played ? "🔊" : "🔈"}
+          </button>
+          {entry?.definition && (
+            <button
+              type="button"
+              onClick={readingDef ? stopReadingDef : speakDefinition}
+              className={`rounded border px-2 py-1 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                readingDef
+                  ? "border-blue-400 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-900/40 dark:text-blue-300"
+                  : "border-gray-300 dark:border-gray-600"
+              }`}
+              aria-label={readingDef ? "Stop reading definition" : "Read definition aloud"}
+            >
+              {readingDef ? "⏹" : "📖"}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="mt-2 flex flex-wrap gap-2 text-xs">

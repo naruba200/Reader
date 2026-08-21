@@ -63,8 +63,13 @@ class DownloadManager {
       const packs = DICTIONARY_PACKS[lang] ?? [];
       for (const def of packs) {
         const key = packKey(def);
-        const store = getDictionaryStore(lang);
-        infos[key] = await store.packInfo(def.source);
+        try {
+          const store = getDictionaryStore(lang);
+          const info = await store.packInfo(def.source);
+          if (info) infos[key] = info;
+        } catch (err) {
+          console.warn(`Failed to check pack status for ${key}`, err);
+        }
       }
     }
     this.state = { ...this.state, infos: { ...this.state.infos, ...infos } };

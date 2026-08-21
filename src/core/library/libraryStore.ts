@@ -35,6 +35,13 @@ export function newBookId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+let lastAddedAt = 0;
+function monotonicNow(): number {
+  const now = Date.now();
+  lastAddedAt = now > lastAddedAt ? now : lastAddedAt + 1;
+  return lastAddedAt;
+}
+
 function openDb(dbName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(dbName, DB_VERSION);
@@ -87,6 +94,25 @@ export class LibraryStore {
   }
 
   async saveBook(doc: BookDocument, fileName: string): Promise<StoredBookMeta> {
+    const existing = await this.findBookByFileName(fileName);
+    if (existing) {
+      const updated: StoredBookMeta = {
+        ...existing,
+        title: doc.title,
+        language: doc.language,
+        format: doc.format,
+        fileName,
+        chapters: doc.chapters.length,
+        author: doc.author,
+        coverUrl: doc.coverUrl,
+      };
+      await this.withStores([STORE_META, STORE_DOCS], "readwrite", (get) => {
+        get(STORE_META).put(updated);
+        get(STORE_DOCS).put({ id: updated.id, doc });
+        return Promise.resolve();
+      });
+      return updated;
+    }
     const meta: StoredBookMeta = {
       id: newBookId(),
       title: doc.title,
@@ -94,7 +120,7 @@ export class LibraryStore {
       format: doc.format,
       fileName,
       chapters: doc.chapters.length,
-      addedAt: Date.now(),
+      addedAt: monotonicNow(),
       author: doc.author,
       coverUrl: doc.coverUrl,
     };
@@ -104,6 +130,23 @@ export class LibraryStore {
       return Promise.resolve();
     });
     return meta;
+  }
+
+  async findBookByFileName(fileName: string): Promise<StoredBookMeta | undefined> {
+    const db = await this.db();
+    return new Promise<StoredBookMeta | undefined>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, "readonly");
+      const store = tx.objectStore(STORE_META);
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(undefined); return; }
+        const meta = cursor.value as StoredBookMeta;
+        if (meta.fileName === fileName) { resolve(meta); return; }
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
   }
 
   async listBooks(): Promise<StoredBookMeta[]> {
