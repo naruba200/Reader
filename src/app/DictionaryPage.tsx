@@ -56,15 +56,58 @@ const LANG_LABEL: Record<LanguageCode, string> = {
   zh: "中文",
 };
 
+/** Split Japanese readings into on (katakana) and kun (hiragana/mixed). */
+function splitOnKun(readings?: string[]): { onReading: string; kunReading: string } {
+  if (!readings || readings.length === 0) return { onReading: "", kunReading: "" };
+  const on: string[] = [];
+  const kun: string[] = [];
+  for (const r of readings) {
+    const hasKatakana = /[\u30A0-\u30FF]/.test(r);
+    const hasHiragana = /[\u3040-\u309F]/.test(r);
+    if (hasKatakana && !hasHiragana) {
+      on.push(r);
+    } else {
+      kun.push(r);
+    }
+  }
+  return { onReading: on.join(", "), kunReading: kun.join(", ") };
+}
+
 export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
   const [language, setLanguage] = useState<LanguageCode>(initial?.language ?? "ja");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ word: string; reading?: string; key: string }[]>([]);
   const [selected, setSelected] = useState<{ surface: string; entry?: DictionaryEntry } | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
+  const [viewMode, setViewMode] = useState<"list" | "table">("list");
+  const [allEntries, setAllEntries] = useState<DictionaryEntry[]>([]);
+  const [allEntriesLoading, setAllEntriesLoading] = useState(false);
   const manager = useDictionaryManager(SUPPORTED);
 
   const searchResults = useMemo(() => results, [results]);
+
+  // Load all entries when switching to table view
+  useEffect(() => {
+    if (viewMode !== "table") return;
+    if (allEntries.length > 0) return;
+    let cancelled = false;
+    setAllEntriesLoading(true);
+    void (async () => {
+      const store = getDictionaryStore(language);
+      const entries = await store.getAllEntries();
+      if (!cancelled) {
+        entries.sort((a, b) => a.word.localeCompare(b.word, language === "ja" ? "ja" : undefined));
+        setAllEntries(entries);
+        setAllEntriesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [viewMode, language, allEntries.length]);
+
+  // Reset entries when language changes
+  useEffect(() => {
+    setAllEntries([]);
+  }, [language]);
 
   useEffect(() => {
     const q = query.trim();
@@ -140,6 +183,18 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         </button>
         <h1 className="text-lg font-bold">Dictionary</h1>
         <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={() => setViewMode(viewMode === "list" ? "table" : "list")}
+            className={`rounded border px-2 py-1 text-sm ${
+              viewMode === "table"
+                ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
+                : "border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
+            }`}
+            title={viewMode === "table" ? "List view" : "Table view"}
+          >
+            {viewMode === "table" ? "☰" : "▦"}
+          </button>
           {SUPPORTED.map((lang) => (
             <button
               key={lang}
@@ -205,6 +260,64 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                   </li>
                 ))}
               </ul>
+            )}
+          </div>
+        ) : viewMode === "table" ? (
+          <div>
+            {allEntriesLoading ? (
+              <p className="text-sm text-gray-400">Loading entries…</p>
+            ) : (
+              <>
+                <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                  {allEntries.length.toLocaleString()} entries
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Word</th>
+                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">On</th>
+                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Kun</th>
+                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">POS</th>
+                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Definition</th>
+                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Examples</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                      {allEntries.map((entry, i) => {
+                        const { onReading, kunReading } = splitOnKun(entry.readings);
+                        return (
+                          <tr
+                            key={`${entry.word}:${i}`}
+                            className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                            onClick={() => {
+                              setSelected({ surface: entry.word, entry });
+                              setHistory(pushHistory({ language, word: entry.word, at: Date.now() }));
+                            }}
+                          >
+                            <td className="whitespace-nowrap px-3 py-2 font-medium">{entry.word}</td>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-500 dark:text-gray-400">
+                              {onReading || "—"}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-500 dark:text-gray-400">
+                              {kunReading || "—"}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                              {entry.pos ?? "—"}
+                            </td>
+                            <td className="px-3 py-2 text-gray-600 dark:text-gray-300">
+                              {entry.definition}
+                            </td>
+                            <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 max-w-xs truncate">
+                              {entry.examples?.slice(0, 2).join(" / ") ?? "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         ) : (

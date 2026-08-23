@@ -143,6 +143,7 @@ export const ChapterView = memo(function ChapterView({
                   key={`${node.start}:${node.length}`}
                   className={combinedClass}
                   title={title}
+                  data-word=""
                   onClick={
                     onWordClick
                       ? (e) => {

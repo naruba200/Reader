@@ -82,7 +82,10 @@ export function buildParagraphNodes(
     .sort((a, b) => a.start - b.start);
 
   let cursor = para.start;
-  for (const token of inRange) {
+  for (let i = 0; i < inRange.length; i++) {
+    const token = inRange[i];
+    const nextToken = inRange[i + 1];
+
     if (token.start > cursor) {
       nodes.push({
         text: text.slice(cursor, token.start),
@@ -90,8 +93,16 @@ export function buildParagraphNodes(
         length: token.start - cursor,
       });
     }
-    nodes.push({ text: token.surface, start: token.start, length: token.length, token });
-    cursor = token.start + token.length;
+
+    const nextStart = nextToken ? nextToken.start : para.end;
+    const mergeEnd = Math.max(token.start + token.length, nextStart);
+    nodes.push({
+      text: text.slice(token.start, mergeEnd),
+      start: token.start,
+      length: mergeEnd - token.start,
+      token,
+    });
+    cursor = mergeEnd;
   }
   if (cursor < para.end) {
     nodes.push({

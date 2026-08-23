@@ -49,8 +49,9 @@ describe("buildParagraphNodes", () => {
     const nodes = buildParagraphNodes(text, { start: 0, end: text.length }, tokens);
     expect(nodes.map((n) => n.text).join("")).toBe(text);
     expect(nodes[0].token?.surface).toBe("Hello");
-    expect(nodes[1].text).toBe(" ");
-    expect(nodes[2].token?.surface).toBe("world");
+    expect(nodes[0].text).toBe("Hello ");
+    expect(nodes[1].token?.surface).toBe("world");
+    expect(nodes[1].text).toBe("world, how are you?");
   });
 
   it("preserves Japanese text instead of replacing it with spaces", () => {
@@ -65,9 +66,11 @@ describe("buildParagraphNodes", () => {
     const nodes = buildParagraphNodes(text, { start: 0, end: text.length }, tokens);
     expect(nodes.map((n) => n.text).join("")).toBe(text);
     expect(nodes.filter((n) => n.token)).toHaveLength(4);
-    // Gaps keep the original punctuation, not spaces.
-    const gapTexts = nodes.filter((n) => !n.token).map((n) => n.text);
-    expect(gapTexts.join("")).toBe("。はいい天気です。");
+    // Each token absorbs trailing gap text (punctuation, filtered function words).
+    expect(nodes[0].text).toBe("こんにちは");
+    expect(nodes[1].text).toBe("世");
+    expect(nodes[2].text).toBe("界。");
+    expect(nodes[3].text).toBe("今日はいい天気です。");
   });
 
   it("renders the raw slice when no tokens cover the paragraph", () => {

@@ -374,6 +374,7 @@ export function Reader({
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (popover) return;
       if (Date.now() - popoverCloseTimeRef.current < 300) return;
+      if ((e.target as HTMLElement).closest("[data-word]")) return;
       if (navigationMode === "swipe") {
         toggleControls();
         return;

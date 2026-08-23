@@ -109,6 +109,26 @@ export class PersistentDictionaryStore implements DictionaryStore {
     }
     return [...exact, ...prefix, ...substring].slice(0, limit);
   }
+
+  /** Return all unique entries (bundled overlay + downloaded packs). */
+  async getAllEntries(): Promise<DictionaryEntry[]> {
+    const backendEntries = await this.backend.getAllEntries();
+    const seen = new Set<string>();
+    const out: DictionaryEntry[] = [];
+    for (const entry of backendEntries) {
+      if (!seen.has(entry.word)) {
+        seen.add(entry.word);
+        out.push(entry);
+      }
+    }
+    for (const entry of bundledDefaultPack(this.language)) {
+      if (!seen.has(entry.word)) {
+        seen.add(entry.word);
+        out.push(entry);
+      }
+    }
+    return out;
+  }
 }
 
 const stores = new Map<LanguageCode, PersistentDictionaryStore>();

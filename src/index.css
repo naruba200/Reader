@@ -129,7 +129,7 @@ body,
   z-index: 10;
   opacity: 0;
   transition: opacity 150ms ease;
-  pointer-events: auto;
+  pointer-events: none;
 }
 .tap-zone:active {
   opacity: 1;

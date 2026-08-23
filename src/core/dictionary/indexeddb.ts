@@ -243,6 +243,33 @@ export class IndexedDbDictionaryStore {
       transaction.onabort = () => reject(transaction.error);
     });
   }
+
+  /** Return all unique entries for this language. */
+  async getAllEntries(): Promise<DictionaryEntry[]> {
+    const db = await this.db();
+    const keyRange = langRange(this.language);
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_ENTRIES, "readonly");
+      const store = transaction.objectStore(STORE_ENTRIES);
+      const request = store.openCursor(keyRange);
+      const out: DictionaryEntry[] = [];
+      const seen = new Set<string>();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          const record = cursor.value as { key: string; entry: DictionaryEntry };
+          if (record.entry && !seen.has(record.entry.word)) {
+            seen.add(record.entry.word);
+            out.push(record.entry);
+          }
+          cursor.continue();
+        }
+      };
+      transaction.oncomplete = () => resolve(out);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
 }
 
 /** Factory that only creates a persistent store when IndexedDB exists. */
