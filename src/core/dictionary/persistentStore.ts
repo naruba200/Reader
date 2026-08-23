@@ -3,17 +3,25 @@ import { bundledDefaultPack } from "./data/defaultPacks";
 import { IndexedDbDictionaryStore } from "./indexeddb";
 import { MemoryDictionaryStore, normalizeKey, recordsFor, type DictionaryStore } from "./store";
 import type { PackInfo, WordIndexRecord } from "./pack";
+import { SortedSearchIndex } from "./searchIndex";
+
+export type IndexState = "idle" | "building" | "ready" | "error";
 
 /**
  * Dictionary store that layers a bundled in-memory default over an IndexedDB
  * backend holding downloaded packs. Lookups check the (larger) backend first,
- * then fall back to the bundled default. Search uses a lazily built in-memory
- * index of word/reading keys.
+ * then fall back to the bundled default. Uses a pre-built snapshot for instant
+ * table view and search index loading.
  */
 export class PersistentDictionaryStore implements DictionaryStore {
   private readonly overlay: MemoryDictionaryStore;
   private readonly backend: IndexedDbDictionaryStore;
-  private searchIndex?: WordIndexRecord[];
+  private searchIndex?: SortedSearchIndex;
+  private snapshotEntries?: DictionaryEntry[];
+  private snapshotTotal = 0;
+  private indexState: IndexState = "idle";
+  private indexStateListeners = new Set<(s: IndexState) => void>();
+  private snapshotBuildPromise?: Promise<void>;
 
   constructor(
     readonly language: LanguageCode,
@@ -22,6 +30,21 @@ export class PersistentDictionaryStore implements DictionaryStore {
     this.overlay = new MemoryDictionaryStore(language);
     void this.overlay.bulkPut(bundledDefaultPack(language));
     this.backend = new IndexedDbDictionaryStore(language, dbName);
+  }
+
+  /** Subscribe to index build state changes. Returns an unsubscribe function. */
+  onIndexStateChange(listener: (s: IndexState) => void): () => void {
+    this.indexStateListeners.add(listener);
+    return () => this.indexStateListeners.delete(listener);
+  }
+
+  getIndexState(): IndexState {
+    return this.indexState;
+  }
+
+  private setIndexState(state: IndexState): void {
+    this.indexState = state;
+    for (const fn of this.indexStateListeners) fn(state);
   }
 
   async lookup(word: string): Promise<DictionaryEntry | undefined> {
@@ -46,7 +69,12 @@ export class PersistentDictionaryStore implements DictionaryStore {
 
   async clear(): Promise<void> {
     await this.backend.clear();
+    await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
+    this.snapshotEntries = undefined;
+    this.snapshotTotal = 0;
+    this.snapshotBuildPromise = undefined;
+    this.setIndexState("idle");
   }
 
   async packInfo(source?: string): Promise<PackInfo | undefined> {
@@ -55,17 +83,58 @@ export class PersistentDictionaryStore implements DictionaryStore {
 
   async installPack(info: PackInfo): Promise<void> {
     await this.backend.putPackInfo(info);
+    await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
+    this.snapshotEntries = undefined;
+    this.snapshotTotal = 0;
+    this.snapshotBuildPromise = undefined;
+    this.setIndexState("idle");
+    void this.rebuildSnapshot();
   }
 
   async removePack(source?: string): Promise<void> {
     await this.backend.deletePack(source);
+    await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
+    this.snapshotEntries = undefined;
+    this.snapshotTotal = 0;
+    this.snapshotBuildPromise = undefined;
+    this.setIndexState("idle");
+    void this.rebuildSnapshot();
   }
 
-  /** Lazily load word/reading keys (bundled default + downloaded pack) for search. */
-  async getSearchIndex(): Promise<WordIndexRecord[]> {
-    if (!this.searchIndex) {
+  // ----- snapshot management -----
+
+  /**
+   * Rebuild the pre-built snapshot: deduplicated, sorted entries + search index.
+   * Runs in background after pack install/remove. One cursor scan builds everything.
+   */
+  rebuildSnapshot(): Promise<void> {
+    if (this.snapshotBuildPromise) return this.snapshotBuildPromise;
+
+    this.snapshotBuildPromise = (async () => {
+      // Collect overlay entries (tiny, ~315 entries)
+      const overlayEntries: DictionaryEntry[] = [];
+      for (const entry of bundledDefaultPack(this.language)) {
+        overlayEntries.push(entry);
+      }
+
+      // One cursor scan to get all backend entries + build search index records
+      const backendRecords = await this.backend.getAllIndexRecords();
+      const backendEntries = await this.backend.getAllEntries();
+
+      // Merge and deduplicate entries
+      const seen = new Set<string>();
+      const allEntries: DictionaryEntry[] = [];
+      for (const entry of [...overlayEntries, ...backendEntries]) {
+        if (!seen.has(entry.word)) {
+          seen.add(entry.word);
+          allEntries.push(entry);
+        }
+      }
+      allEntries.sort((a, b) => a.word.localeCompare(b.word, this.language === "ja" ? "ja" : undefined));
+
+      // Build sorted search index
       const overlayRecords: WordIndexRecord[] = [];
       for (const entry of bundledDefaultPack(this.language)) {
         for (const { key, reading } of recordsFor(entry, this.language)) {
@@ -77,41 +146,102 @@ export class PersistentDictionaryStore implements DictionaryStore {
           });
         }
       }
-      const backendRecords = await this.backend.getAllIndexRecords();
-      this.searchIndex = [...overlayRecords, ...backendRecords];
-    }
-    return this.searchIndex;
+      const allRecords = [...overlayRecords, ...backendRecords];
+      allRecords.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+      // Cache in memory
+      this.snapshotEntries = allEntries;
+      this.snapshotTotal = allEntries.length;
+      this.searchIndex = new SortedSearchIndex(allRecords);
+      this.setIndexState("ready");
+
+      // Persist to IndexedDB (best-effort)
+      void this.backend.putEntriesSnapshot({
+        entries: allEntries,
+        total: allEntries.length,
+        searchIndex: allRecords,
+      }).catch(() => { /* not critical */ });
+    })();
+
+    return this.snapshotBuildPromise;
   }
 
-  /** Priority search: exact match, then prefix, then substring; deduped by word. */
+  /**
+   * Load snapshot from IndexedDB cache (fast ~50ms) or trigger rebuild.
+   * Populates this.snapshotEntries, this.snapshotTotal, this.searchIndex.
+   */
+  private async ensureSnapshot(): Promise<void> {
+    // Already loaded in memory
+    if (this.snapshotEntries && this.searchIndex) return;
+
+    // Try loading from IndexedDB cache
+    try {
+      const cached = await this.backend.getEntriesSnapshot();
+      if (cached && cached.entries.length > 0) {
+        this.snapshotEntries = cached.entries;
+        this.snapshotTotal = cached.total;
+        this.searchIndex = new SortedSearchIndex(cached.searchIndex);
+        this.setIndexState("ready");
+        return;
+      }
+    } catch {
+      // Cache read failed, fall through to rebuild
+    }
+
+    // No cache — rebuild from scratch
+    await this.rebuildSnapshot();
+  }
+
+  // ----- table view -----
+
+  /**
+   * Return a paginated slice of unique entries for the table view.
+   * Uses the pre-built snapshot for O(1) array slicing.
+   */
+  async getPage(
+    offset: number,
+    limit: number,
+  ): Promise<{ entries: DictionaryEntry[]; total: number }> {
+    await this.ensureSnapshot();
+    if (this.snapshotEntries) {
+      return {
+        entries: this.snapshotEntries.slice(offset, offset + limit),
+        total: this.snapshotTotal,
+      };
+    }
+    // Fallback: cursor scan (shouldn't happen after snapshot is built)
+    return this.backend.getEntriesPaginated(offset, limit);
+  }
+
+  // ----- search -----
+
+  /** Ensure the search index is built; returns immediately if already built. */
+  private ensureIndex(): Promise<void> {
+    if (this.searchIndex) return Promise.resolve();
+    return this.ensureSnapshot();
+  }
+
+  /** Priority search using sorted index with binary search. */
   async search(query: string, limit = 50): Promise<WordIndexRecord[]> {
     const q = normalizeKey(query, this.language);
     if (!q) return [];
-    const index = await this.getSearchIndex();
-    const seen = new Set<string>();
-    const exact: WordIndexRecord[] = [];
-    const prefix: WordIndexRecord[] = [];
-    const substring: WordIndexRecord[] = [];
-    const push = (arr: WordIndexRecord[], rec: WordIndexRecord) => {
-      if (seen.has(rec.word)) return;
-      seen.add(rec.word);
-      arr.push(rec);
-    };
-    for (const rec of index) {
-      const key = rec.key.slice(this.language.length + 1);
-      if (key === q) {
-        if (exact.length < limit) push(exact, rec);
-      } else if (key.startsWith(q)) {
-        if (prefix.length < limit) push(prefix, rec);
-      } else if (key.includes(q)) {
-        if (substring.length < limit) push(substring, rec);
-      }
-    }
-    return [...exact, ...prefix, ...substring].slice(0, limit);
+    await this.ensureIndex();
+    if (!this.searchIndex) return [];
+    return this.searchIndex.search(q, this.language, limit);
+  }
+
+  /** Return the raw sorted search index records (for filtering by source, etc.). */
+  async getSearchIndex(): Promise<WordIndexRecord[]> {
+    await this.ensureIndex();
+    if (!this.searchIndex) return [];
+    return this.searchIndex.toArray();
   }
 
   /** Return all unique entries (bundled overlay + downloaded packs). */
   async getAllEntries(): Promise<DictionaryEntry[]> {
+    await this.ensureSnapshot();
+    if (this.snapshotEntries) return this.snapshotEntries;
+    // Fallback
     const backendEntries = await this.backend.getAllEntries();
     const seen = new Set<string>();
     const out: DictionaryEntry[] = [];

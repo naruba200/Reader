@@ -10,6 +10,8 @@ export interface PackInfo {
   count: number;
   sizeBytes: number;
   downloadedAt: number;
+  /** Number of unique words (after deduplication). Cached for fast table pagination. */
+  uniqueWordCount?: number;
 }
 
 /** A lightweight search index record (word/reading only, full entry fetched by key). */

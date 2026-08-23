@@ -20,6 +20,24 @@ type LibrarySort = "recent" | "title" | "added" | "language";
 
 const VIEW_MODE_KEY = "smart-reader-library-view";
 const SORT_KEY = "smart-reader-library-sort";
+const BOOK_CACHE_KEY = "smart-reader-book-cache";
+
+function loadBookCache(): StoredBookMeta[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BOOK_CACHE_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBookCache(books: StoredBookMeta[]): void {
+  try {
+    localStorage.setItem(BOOK_CACHE_KEY, JSON.stringify(books));
+  } catch {
+    /* storage full/unavailable */
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -108,12 +126,31 @@ export function App() {
     return () => { remove?.(); };
   }, []);
 
+  // Load books: show cache instantly, then refresh from IndexedDB in background
   useEffect(() => {
     let cancelled = false;
+
+    // 1. Instant: load from localStorage cache
+    const cached = loadBookCache();
+    if (cached.length > 0) {
+      setBooks(cached);
+      setHydrated(true);
+    }
+
+    // 2. Background: refresh from IndexedDB
     getLibraryStore()
       .listBooks()
-      .then((list) => { if (cancelled) return; setBooks(list); setHydrated(true); })
-      .catch((err) => { console.warn("Failed to load library", err); setHydrated(true); });
+      .then((list) => {
+        if (cancelled) return;
+        setBooks(list);
+        setHydrated(true);
+        saveBookCache(list);
+      })
+      .catch((err) => {
+        console.warn("Failed to load library", err);
+        if (!cancelled) setHydrated(true);
+      });
+
     return () => { cancelled = true; };
   }, []);
 
@@ -127,12 +164,10 @@ export function App() {
       const meta = await getLibraryStore().saveBook(doc, file.name);
       setBooks((prev) => {
         const idx = prev.findIndex((b) => b.id === meta.id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = meta;
-          return next;
-        }
-        return [...prev, meta];
+        const next = idx >= 0 ? [...prev] : [...prev, meta];
+        if (idx >= 0) next[idx] = meta;
+        saveBookCache(next);
+        return next;
       });
       setActive({ id: meta.id, doc });
       setView("reader");
@@ -179,7 +214,11 @@ export function App() {
     if (!confirm("Delete this book?")) return;
     try {
       await getLibraryStore().deleteBook(id);
-      setBooks((prev) => prev.filter((b) => b.id !== id));
+      setBooks((prev) => {
+        const next = prev.filter((b) => b.id !== id);
+        saveBookCache(next);
+        return next;
+      });
     } catch (err) {
       console.warn("Failed to delete book", err);
     }

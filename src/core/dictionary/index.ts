@@ -10,7 +10,10 @@ export {
   IndexedDbDictionaryStore,
   createDictionaryStore,
 } from "./indexeddb";
+export type { EntriesSnapshot } from "./indexeddb";
 export { PersistentDictionaryStore, getDictionaryStore } from "./persistentStore";
+export type { IndexState } from "./persistentStore";
+export { SortedSearchIndex } from "./searchIndex";
 export { consumeNdJsonStream } from "./ndjson";
 export { parsePackLine, formatBytes, PACK_FILE_EXT } from "./pack";
 export type { PackInfo, WordIndexRecord } from "./pack";

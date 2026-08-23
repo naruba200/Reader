@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DictionaryEntry, LanguageCode } from "../core/types";
 import {
   bundledDefaultPack,
@@ -7,13 +7,13 @@ import {
   getDictionaryStore,
   useDictionaryManager,
 } from "../core/dictionary";
+import type { IndexState } from "../core/dictionary/persistentStore";
 import { packKey } from "../core/dictionary/downloadManager";
 import type { PackDefinition } from "../core/dictionary/packs";
 import { EntryCard } from "../reader/EntryCard";
 
 export interface DictionaryPageProps {
   onBack: () => void;
-  /** Preloaded lookup (e.g. handed off from a popover in the reader). */
   initial?: { language: LanguageCode; word?: string };
 }
 
@@ -23,8 +23,15 @@ interface HistoryItem {
   at: number;
 }
 
+interface SearchResult {
+  word: string;
+  reading?: string;
+  key: string;
+}
+
 const HISTORY_KEY = "smart-reader-dict-history";
 const SUPPORTED: readonly LanguageCode[] = ["ja", "en"];
+const PAGE_SIZE_OPTIONS = [50, 100, 200];
 
 function loadHistory(): HistoryItem[] {
   try {
@@ -56,7 +63,6 @@ const LANG_LABEL: Record<LanguageCode, string> = {
   zh: "中文",
 };
 
-/** Split Japanese readings into on (katakana) and kun (hiragana/mixed). */
 function splitOnKun(readings?: string[]): { onReading: string; kunReading: string } {
   if (!readings || readings.length === 0) return { onReading: "", kunReading: "" };
   const on: string[] = [];
@@ -76,39 +82,66 @@ function splitOnKun(readings?: string[]): { onReading: string; kunReading: strin
 export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
   const [language, setLanguage] = useState<LanguageCode>(initial?.language ?? "ja");
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<{ word: string; reading?: string; key: string }[]>([]);
+  const [results, setResults] = useState<SearchResult[]>([]);
   const [selected, setSelected] = useState<{ surface: string; entry?: DictionaryEntry } | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
   const [viewMode, setViewMode] = useState<"list" | "table">("list");
-  const [allEntries, setAllEntries] = useState<DictionaryEntry[]>([]);
-  const [allEntriesLoading, setAllEntriesLoading] = useState(false);
+
+  // Paginated table state
+  const [pageSize, setPageSize] = useState(100);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [pageEntries, setPageEntries] = useState<DictionaryEntry[]>([]);
+  const [totalEntries, setTotalEntries] = useState(0);
+  const [pageLoading, setPageLoading] = useState(false);
+
+  // Search index state
+  const [indexState, setIndexState] = useState<IndexState>("idle");
+  const indexStateRef = useRef<IndexState>("idle");
+
   const manager = useDictionaryManager(SUPPORTED);
 
-  const searchResults = useMemo(() => results, [results]);
+  // Subscribe to index state changes
+  useEffect(() => {
+    const store = getDictionaryStore(language);
+    const unsub = store.onIndexStateChange((s) => {
+      indexStateRef.current = s;
+      setIndexState(s);
+    });
+    // Check current state in case it changed between render and effect
+    const current = store.getIndexState();
+    if (current !== indexStateRef.current) {
+      indexStateRef.current = current;
+      setIndexState(current);
+    }
+    return unsub;
+  }, [language]);
 
-  // Load all entries when switching to table view
+  // Load paginated entries when switching to table view or changing page
   useEffect(() => {
     if (viewMode !== "table") return;
-    if (allEntries.length > 0) return;
     let cancelled = false;
-    setAllEntriesLoading(true);
+    setPageLoading(true);
     void (async () => {
       const store = getDictionaryStore(language);
-      const entries = await store.getAllEntries();
+      const offset = currentPage * pageSize;
+      const { entries, total } = await store.getPage(offset, pageSize);
       if (!cancelled) {
-        entries.sort((a, b) => a.word.localeCompare(b.word, language === "ja" ? "ja" : undefined));
-        setAllEntries(entries);
-        setAllEntriesLoading(false);
+        setPageEntries(entries);
+        setTotalEntries(total);
+        setPageLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [viewMode, language, allEntries.length]);
+  }, [viewMode, language, currentPage, pageSize]);
 
-  // Reset entries when language changes
+  // Reset table state when language changes
   useEffect(() => {
-    setAllEntries([]);
+    setCurrentPage(0);
+    setPageEntries([]);
+    setTotalEntries(0);
   }, [language]);
 
+  // Search with debounce
   useEffect(() => {
     const q = query.trim();
     if (!q) {
@@ -127,7 +160,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
           key: r.key,
         })),
       );
-    }, 250);
+    }, 100);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -144,11 +177,9 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
     })();
   }, []);
 
-  // Handle handoff from the reader popover.
   useEffect(() => {
     if (initial?.word) openLookup(initial.language, initial.word);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initial]);
+  }, [initial, openLookup]);
 
   const openResult = useCallback(
     (word: string, reading?: string) => {
@@ -169,6 +200,15 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
     setQuery("");
   };
 
+  const switchViewMode = (mode: "list" | "table") => {
+    setViewMode(mode);
+    if (mode === "list") {
+      setPageEntries([]);
+      setTotalEntries(0);
+    }
+  };
+
+  const totalPages = Math.ceil(totalEntries / pageSize);
   const bundledCount = bundledDefaultPack(language).length;
 
   return (
@@ -185,7 +225,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         <div className="ml-auto flex gap-2">
           <button
             type="button"
-            onClick={() => setViewMode(viewMode === "list" ? "table" : "list")}
+            onClick={() => switchViewMode(viewMode === "list" ? "table" : "list")}
             className={`rounded border px-2 py-1 text-sm ${
               viewMode === "table"
                 ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
@@ -213,13 +253,25 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={`Search ${LANG_LABEL[language]}…`}
-          className="mb-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800"
-        />
+        <div className="mb-4 flex items-center gap-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${LANG_LABEL[language]}…`}
+            className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800"
+          />
+          {indexState === "building" && (
+            <span className="shrink-0 text-xs text-amber-600 dark:text-amber-400">
+              Indexing…
+            </span>
+          )}
+          {indexState === "ready" && query.trim() && (
+            <span className="shrink-0 text-xs text-green-600 dark:text-green-400">
+              ✓
+            </span>
+          )}
+        </div>
 
         {selected ? (
           <div>
@@ -243,7 +295,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
               <p className="text-sm text-gray-400">No matches.</p>
             ) : (
               <ul className="divide-y divide-gray-100 dark:divide-gray-800">
-                {searchResults.map((r) => (
+                {results.map((r) => (
                   <li key={r.key}>
                     <button
                       type="button"
@@ -264,13 +316,48 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
           </div>
         ) : viewMode === "table" ? (
           <div>
-            {allEntriesLoading ? (
+            {pageLoading ? (
               <p className="text-sm text-gray-400">Loading entries…</p>
             ) : (
               <>
-                <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                  {allEntries.length.toLocaleString()} entries
+                {/* Pagination controls */}
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <span>{totalEntries.toLocaleString()} entries</span>
+                  <span>·</span>
+                  <span>Page {currentPage + 1} of {totalPages}</span>
+                  <span>·</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(0);
+                    }}
+                    className="rounded border border-gray-300 bg-white px-1 py-0.5 text-xs dark:border-gray-600 dark:bg-gray-800"
+                  >
+                    {PAGE_SIZE_OPTIONS.map((n) => (
+                      <option key={n} value={n}>{n} / page</option>
+                    ))}
+                  </select>
+                  <div className="ml-auto flex gap-1">
+                    <button
+                      type="button"
+                      disabled={currentPage === 0}
+                      onClick={() => setCurrentPage((p) => p - 1)}
+                      className="rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                    >
+                      ← Prev
+                    </button>
+                    <button
+                      type="button"
+                      disabled={currentPage >= totalPages - 1}
+                      onClick={() => setCurrentPage((p) => p + 1)}
+                      className="rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                    >
+                      Next →
+                    </button>
+                  </div>
                 </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse text-sm">
                     <thead>
@@ -284,11 +371,11 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                      {allEntries.map((entry, i) => {
+                      {pageEntries.map((entry, i) => {
                         const { onReading, kunReading } = splitOnKun(entry.readings);
                         return (
                           <tr
-                            key={`${entry.word}:${i}`}
+                            key={`${entry.word}:${currentPage * pageSize + i}`}
                             className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
                             onClick={() => {
                               setSelected({ surface: entry.word, entry });
@@ -316,6 +403,45 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                       })}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Bottom pagination */}
+                <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <button
+                    type="button"
+                    disabled={currentPage === 0}
+                    onClick={() => setCurrentPage(0)}
+                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    « First
+                  </button>
+                  <button
+                    type="button"
+                    disabled={currentPage === 0}
+                    onClick={() => setCurrentPage((p) => p - 1)}
+                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    ‹ Prev
+                  </button>
+                  <span>
+                    Page {currentPage + 1} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages - 1}
+                    onClick={() => setCurrentPage((p) => p + 1)}
+                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    Next ›
+                  </button>
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages - 1}
+                    onClick={() => setCurrentPage(totalPages - 1)}
+                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    Last »
+                  </button>
                 </div>
               </>
             )}

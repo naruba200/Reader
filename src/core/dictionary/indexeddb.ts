@@ -8,10 +8,18 @@ import {
 import type { PackInfo, WordIndexRecord } from "./pack";
 
 const DB_NAME = "smart-reader";
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 const STORE_ENTRIES = "dictionary";
 const STORE_PACKS = "packs";
 const STORE_INDEX = "wordIndex";
+const STORE_SNAPSHOT = "entriesSnapshot";
+
+export interface EntriesSnapshot {
+  lang: string;
+  entries: DictionaryEntry[];
+  total: number;
+  searchIndex: WordIndexRecord[];
+}
 
 function openDb(dbName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -26,6 +34,13 @@ function openDb(dbName: string): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_INDEX)) {
         db.createObjectStore(STORE_INDEX, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(STORE_SNAPSHOT)) {
+        db.createObjectStore(STORE_SNAPSHOT, { keyPath: "lang" });
+      }
+      // Remove old searchIndexCache store if it exists (replaced by snapshot)
+      if (db.objectStoreNames.contains("searchIndexCache")) {
+        db.deleteObjectStore("searchIndexCache");
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -269,6 +284,94 @@ export class IndexedDbDictionaryStore {
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error);
     });
+  }
+
+  /**
+   * Return a paginated slice of unique entries, sorted by key (lexicographic).
+   * First pass counts unique words, second pass collects the page.
+   */
+  async getEntriesPaginated(
+    offset: number,
+    limit: number,
+  ): Promise<{ entries: DictionaryEntry[]; total: number }> {
+    const db = await this.db();
+    const keyRange = langRange(this.language);
+
+    // Pass 1: count unique words
+    const total = await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction(STORE_ENTRIES, "readonly");
+      const store = tx.objectStore(STORE_ENTRIES);
+      const req = store.openCursor(keyRange);
+      const seen = new Set<string>();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          const record = cursor.value as { key: string; entry: DictionaryEntry };
+          if (record.entry) seen.add(record.entry.word);
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve(seen.size);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+
+    if (total === 0) return { entries: [], total: 0 };
+
+    // Pass 2: collect the page
+    const entries = await new Promise<DictionaryEntry[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_ENTRIES, "readonly");
+      const store = tx.objectStore(STORE_ENTRIES);
+      const req = store.openCursor(keyRange);
+      const out: DictionaryEntry[] = [];
+      const seen = new Set<string>();
+      let count = 0;
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return;
+        const record = cursor.value as { key: string; entry: DictionaryEntry };
+        if (record.entry && !seen.has(record.entry.word)) {
+          seen.add(record.entry.word);
+          if (count >= offset && out.length < limit) {
+            out.push(record.entry);
+          }
+          count++;
+        }
+        if (out.length < limit) cursor.continue();
+      };
+      tx.oncomplete = () => resolve(out);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+
+    return { entries, total };
+  }
+  // ----- entries snapshot (pre-built sorted entries + search index) -----
+
+  /** Load the pre-built snapshot for this language. Returns null if no snapshot. */
+  async getEntriesSnapshot(): Promise<EntriesSnapshot | null> {
+    const db = await this.db();
+    const record = await run<EntriesSnapshot | undefined>(
+      db, STORE_SNAPSHOT, "readonly",
+      (store) => store.get(this.language),
+    );
+    return record ?? null;
+  }
+
+  /** Persist the pre-built snapshot for this language. */
+  async putEntriesSnapshot(snapshot: Omit<EntriesSnapshot, "lang">): Promise<void> {
+    const db = await this.db();
+    await runBatch(db, STORE_SNAPSHOT, (store) => {
+      store.put({ lang: this.language, ...snapshot });
+    });
+  }
+
+  /** Invalidate (delete) the snapshot for this language. */
+  async invalidateEntriesSnapshot(): Promise<void> {
+    const db = await this.db();
+    await run(db, STORE_SNAPSHOT, "readwrite", (store) =>
+      store.delete(this.language),
+    ).catch(() => { /* key may not exist */ });
   }
 }
 

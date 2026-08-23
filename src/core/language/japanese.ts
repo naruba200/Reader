@@ -1,4 +1,3 @@
-import * as kuromoji from "@patdx/kuromoji";
 import type { LanguageAdapter, Token } from "../types";
 
 /** Hiragana range (small kana ぁ-ゖ). */
@@ -279,47 +278,39 @@ const FUNCTION_WORD_POS = new Set([
 /** Kuromoji dictionary directory (browser). Bundled under public/dict/kuromoji for offline use. */
 const KUROMOJI_DICT_URL = "/dict/kuromoji/";
 
-/**
- * Browser dictionary loader that handles both kinds of servers: those that
- * pre-compress `.gz` files (Content-Encoding: gzip, e.g. Vite dev/preview) and
- * those that serve the raw gzip bytes (e.g. file:// on Android). Sniffs the
- * gzip magic bytes and decompresses only when needed.
- */
-const browserLoader: kuromoji.LoaderConfig = {
-  async loadArrayBuffer(filename) {
-    const res = await fetch(KUROMOJI_DICT_URL + filename);
-    if (!res.ok) {
-      throw new Error(`Kuromoji dictionary fetch failed (HTTP ${res.status}): ${filename}`);
+function buildTokenizer(): Promise<{ tokenize(text: string): Array<{ surface_form: string; basic_form: string; pos: string; word_position: number; pos_detail_1: string; pos_detail_2: string; pos_detail_3: string; conjugated_type: string; conjugated_form: string; reading?: string }> }> {
+  // Dynamic import so kuromoji is code-split out of the main bundle.
+  return import("@patdx/kuromoji").then((kuromoji) => {
+    if (typeof window !== "undefined") {
+      const browserLoader = {
+        async loadArrayBuffer(filename: string) {
+          const res = await fetch(KUROMOJI_DICT_URL + filename);
+          if (!res.ok) {
+            throw new Error(`Kuromoji dictionary fetch failed (HTTP ${res.status}): ${filename}`);
+          }
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+            const stream = new Response(bytes).body!.pipeThrough(new DecompressionStream("gzip"));
+            return new Response(stream).arrayBuffer();
+          }
+          return bytes.buffer;
+        },
+      };
+      return new kuromoji.TokenizerBuilder({ loader: browserLoader }).build();
     }
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
-      const stream = new Response(bytes).body!.pipeThrough(new DecompressionStream("gzip"));
-      return new Response(stream).arrayBuffer();
-    }
-    return bytes.buffer;
-  },
-};
-
-/** Resolved tokenizer type (the Tokenizer class is not exported by the package). */
-type KuromojiTokenizer = Awaited<ReturnType<kuromoji.TokenizerBuilder["build"]>>;
-
-function buildTokenizer(): Promise<KuromojiTokenizer> {
-  if (typeof window !== "undefined") {
-    return new kuromoji.TokenizerBuilder({ loader: browserLoader }).build();
-  }
-  // Node (tests): read the same bundled dictionaries from disk. Dynamically
-  // imported so the browser bundle never pulls in fs/zlib.
-  return import("@patdx/kuromoji/node").then(({ default: NodeDictionaryLoader }) =>
-    new kuromoji.TokenizerBuilder({
-      loader: new NodeDictionaryLoader({ dic_path: "public/dict/kuromoji/" }),
-    }).build(),
-  );
+    // Node (tests): read the same bundled dictionaries from disk.
+    return import("@patdx/kuromoji/node").then(({ default: NodeDictionaryLoader }) =>
+      new kuromoji.TokenizerBuilder({
+        loader: new NodeDictionaryLoader({ dic_path: "public/dict/kuromoji/" }),
+      }).build(),
+    );
+  });
 }
 
-let tokenizerPromise: Promise<KuromojiTokenizer> | null = null;
+let tokenizerPromise: ReturnType<typeof buildTokenizer> | null = null;
 
 /** Lazy singleton Kuromoji tokenizer. Rebuilds if a load attempt fails. */
-export function getKuromojiTokenizer(): Promise<KuromojiTokenizer> {
+export function getKuromojiTokenizer(): ReturnType<typeof buildTokenizer> {
   if (tokenizerPromise === null) {
     tokenizerPromise = buildTokenizer().catch((err) => {
       tokenizerPromise = null;
