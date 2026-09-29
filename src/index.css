@@ -110,6 +110,44 @@ body,
   background-color: rgb(25 22 18);
 }
 
+/* Custom thin scrollbar */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(156 163 175) transparent;
+}
+.dark .custom-scrollbar {
+  scrollbar-color: rgb(75 85 99) transparent;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(156 163 175);
+  border-radius: 3px;
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(75 85 99);
+}
+
+/* Toast notification */
+.toast-enter {
+  animation: toast-in 200ms ease-out forwards;
+}
+.toast-exit {
+  animation: toast-out 200ms ease-in forwards;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(-50%) translateY(0); }
+  to { opacity: 0; transform: translateX(-50%) translateY(8px); }
+}
+
 /* Footer icon button active state */
 .reader-icon-btn {
   @apply flex items-center justify-center rounded-lg p-2.5 text-gray-500 transition-colors dark:text-gray-400;

@@ -98,6 +98,7 @@ export interface DictionaryEntry {
   examples?: string[];
   audio?: string;
   source?: string;
+  level?: string;
 }
 
 export interface LanguageAdapter {

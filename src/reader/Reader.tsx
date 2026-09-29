@@ -16,14 +16,16 @@ import { levelRank } from "../core/analysis";
 import { ChapterView } from "./ChapterView";
 import { WordPopover, type PopoverState } from "./WordPopover";
 import { paginateChapter } from "./pages";
+import { Toast } from "../components/Toast";
+import {
+  getActiveEngine,
+  getActiveVoiceId,
+  setActiveVoice,
+  getVoicesForLanguage,
+  type TTSVoice,
+} from "../core/tts";
 
 /** A grammar pattern match in the text. */
-export interface GrammarMatch {
-  start: number;
-  end: number;
-  pattern: string;
-  definition: string;
-}
 
 export interface ReaderProps {
   book: BookDocument;
@@ -47,10 +49,10 @@ function loadFontSize(): number {
   return 17;
 }
 
-export type HighlightMode = "all" | "hard" | "unknown" | "off" | "grammar";
+export type HighlightMode = "all" | "hard" | "unknown" | "off";
 
 const HIGHLIGHT_KEY = "smart-reader-highlight-mode";
-const HIGHLIGHT_MODES: readonly HighlightMode[] = ["all", "hard", "unknown", "off", "grammar"];
+const HIGHLIGHT_MODES: readonly HighlightMode[] = ["all", "hard", "unknown", "off"];
 
 function loadHighlightMode(): HighlightMode {
   try {
@@ -61,7 +63,6 @@ function loadHighlightMode(): HighlightMode {
 }
 
 export function shouldHighlightLevel(level: Level, mode: HighlightMode): boolean {
-  if (mode === "grammar") return true;
   switch (mode) {
     case "all": return true;
     case "unknown": return level === "UNKNOWN" || level === "FREQ_COMMON" || level === "FREQ_UNCOMMON" || level === "FREQ_RARE";
@@ -158,16 +159,15 @@ export function Reader({
   const [showChapterSelect, setShowChapterSelect] = useState(false);
   const [showFontSizeBar, setShowFontSizeBar] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   // TTS state
   const [ttsPlaying, setTtsPlaying] = useState(false);
   const [ttsPaused, setTtsPaused] = useState(false);
   const [ttsSentenceIndex, setTtsSentenceIndex] = useState(-1);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const [showVoiceSelector, setShowVoiceSelector] = useState(false);
+  const [ttsVoices, setTtsVoices] = useState<TTSVoice[]>([]);
   const sentencesRef = useRef<string[]>([]);
-
-  // Grammar pattern matches
-  const [grammarMatches, setGrammarMatches] = useState<GrammarMatch[]>([]);
 
   // Controls visibility management
   const toggleControls = useCallback(() => {
@@ -180,6 +180,8 @@ export function Reader({
   const changeHighlightMode = useCallback((mode: HighlightMode) => {
     setHighlightMode(mode);
     try { localStorage.setItem(HIGHLIGHT_KEY, mode); } catch { /* ignore */ }
+    const labels: Record<HighlightMode, string> = { all: "All", hard: "Hard", unknown: "Unknown", off: "Off" };
+    setToast(`Highlight: ${labels[mode]}`);
   }, []);
 
   const changeFontSize = useCallback((delta: number) => {
@@ -195,6 +197,7 @@ export function Reader({
       const idx = FILTER_CYCLE.indexOf(prev);
       const next = FILTER_CYCLE[(idx + 1) % FILTER_CYCLE.length];
       try { localStorage.setItem(FILTER_KEY, next); } catch { /* ignore */ }
+      setToast(FILTER_LABEL[next]);
       return next;
     });
   }, []);
@@ -205,6 +208,8 @@ export function Reader({
       const idx = cycle.indexOf(prev);
       const next = cycle[(idx + 1) % cycle.length];
       try { localStorage.setItem(NAV_MODE_KEY, next); } catch { /* ignore */ }
+      const labels: Record<NavigationMode, string> = { both: "Tap + Swipe", tap: "Tap only", swipe: "Swipe only" };
+      setToast(labels[next]);
       return next;
     });
   }, []);
@@ -262,47 +267,6 @@ export function Reader({
       .catch((err) => { console.error("Analysis failed", err); setBusy(false); });
     return () => { cancelled = true; };
   }, [processor, chapter]);
-
-  // Grammar pattern detection
-  useEffect(() => {
-    if (highlightMode !== "grammar" || book.language !== "ja") {
-      setGrammarMatches([]);
-      return;
-    }
-    let cancelled = false;
-    const dict = getDictionaryStore(book.language);
-    const grammarSources = ["Tae Kim's Grammar", "JLPT Grammar"];
-    void (async () => {
-      const matches: GrammarMatch[] = [];
-      const text = chapter.text;
-      const searchIndex = await dict.getSearchIndex();
-      const grammarEntries = searchIndex.filter((r) =>
-        r.source && grammarSources.includes(r.source)
-      );
-      const seenWords = new Set<string>();
-      for (const rec of grammarEntries) {
-        if (seenWords.has(rec.word)) continue;
-        seenWords.add(rec.word);
-        const pattern = rec.word.replace(/^[～〜]/, "").replace(/[～〜]$/, "");
-        if (!pattern || pattern.length < 2) continue;
-        let searchFrom = 0;
-        while (searchFrom < text.length) {
-          const idx = text.indexOf(pattern, searchFrom);
-          if (idx === -1) break;
-          matches.push({
-            start: idx,
-            end: idx + pattern.length,
-            pattern: rec.word,
-            definition: "",
-          });
-          searchFrom = idx + pattern.length;
-        }
-      }
-      matches.sort((a, b) => a.start - b.start);
-      if (!cancelled) setGrammarMatches(matches);
-    })().catch(() => {});
-    return () => { cancelled = true; };
-  }, [highlightMode, chapter, book.language]);
 
   const levelClass = useCallback(
     (level: Level) => {
@@ -416,8 +380,14 @@ export function Reader({
     [goNext, goPrev, navigationMode],
   );
 
+  // TTS - load voices for current language
+  useEffect(() => {
+    const voices = getVoicesForLanguage(book.language);
+    setTtsVoices(voices);
+  }, [book.language]);
+
   // TTS - sentence-level sequential speaking
-  const speakSentence = useCallback((sentences: string[], index: number) => {
+  const speakSentence = useCallback(async (sentences: string[], index: number) => {
     if (index >= sentences.length) {
       setTtsPlaying(false);
       setTtsPaused(false);
@@ -429,27 +399,13 @@ export function Reader({
       speakSentence(sentences, index + 1);
       return;
     }
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = book.language === "ja" ? "ja-JP" :
-      book.language === "en" ? "en-US" : `${book.language}-${book.language.toUpperCase()}`;
-    const voices = speechSynthesis.getVoices();
-    const langVoice = voices.find((v) => v.lang.startsWith(book.language));
-    if (langVoice) utterance.voice = langVoice;
-    utterance.onend = () => {
-      speakSentence(sentences, index + 1);
-    };
-    utterance.onerror = (e) => {
-      if (e.error !== "canceled") {
-        console.warn("TTS error", e.error);
-      }
-      setTtsPlaying(false);
-      setTtsPaused(false);
-      setTtsSentenceIndex(-1);
-    };
-    utteranceRef.current = utterance;
     setTtsSentenceIndex(index);
-    speechSynthesis.speak(utterance);
-  }, [book.language]);
+    const engine = getActiveEngine();
+    const voiceId = getActiveVoiceId() ?? ttsVoices[0]?.id;
+    await engine.speak(text, voiceId);
+    // Continue to next sentence
+    speakSentence(sentences, index + 1);
+  }, [book.language, ttsVoices]);
 
   const startTTS = useCallback(() => {
     const text = chapter.text;
@@ -462,33 +418,15 @@ export function Reader({
     speakSentence(sentences, 0);
   }, [chapter.text, speakSentence]);
 
-  const pauseTTS = useCallback(() => { speechSynthesis.pause(); setTtsPaused(true); }, []);
-  const resumeTTS = useCallback(() => { speechSynthesis.resume(); setTtsPaused(false); }, []);
+  const pauseTTS = useCallback(() => { getActiveEngine().pause(); setTtsPaused(true); }, []);
+  const resumeTTS = useCallback(() => { getActiveEngine().resume(); setTtsPaused(false); }, []);
   const stopTTS = useCallback(() => {
-    speechSynthesis.cancel();
+    getActiveEngine().stop();
     setTtsPlaying(false);
     setTtsPaused(false);
     setTtsSentenceIndex(-1);
-    utteranceRef.current = null;
   }, []);
 
-  // Progress calculation
-  const totalChars = useMemo(() =>
-    book.chapters.reduce((sum, c) => sum + c.text.length, 0), [book.chapters]);
-  const readChars = useMemo(() => {
-    let chars = 0;
-    for (let i = 0; i < chapterIndex; i++) chars += book.chapters[i].text.length;
-    if (page) {
-      for (const item of page.items) {
-        if (item.kind === "text") {
-          chars += item.start;
-          break;
-        }
-      }
-    }
-    return chars;
-  }, [chapterIndex, page, book.chapters]);
-  const progress = totalChars > 0 ? readChars / totalChars : 0;
 
   const filterClass = readingFilter === "sepia" ? "filter-sepia" :
     readingFilter === "warm" ? "filter-warm" :
@@ -503,17 +441,13 @@ export function Reader({
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      {/* Page counter (always visible at top) */}
+      {/* Page counter (hidden when controls are visible) */}
+      {!controlsVisible && (
       <div className={`absolute top-0 left-0 right-0 z-30 flex items-center justify-center py-0.5 text-xs text-gray-500 ${chromeClass}`}>
         Page {pageIndex + 1} / {pages.length}
       </div>
-      {/* Progress bar */}
-      <div className="absolute top-5 left-0 right-0 z-30 h-1 bg-gray-200">
-        <div
-          className="h-full bg-blue-500 transition-all duration-300"
-          style={{ width: `${progress * 100}%` }}
-        />
-      </div>
+      )}
+
 
       {/* Navigation bar (visible when controls are shown) */}
       {controlsVisible && (
@@ -602,7 +536,6 @@ export function Reader({
             fontSize={fontSize}
             ttsSentenceIndex={ttsSentenceIndex}
             ttsSentences={ttsPlaying ? sentencesRef.current : []}
-            grammarMatches={highlightMode === "grammar" ? grammarMatches : []}
           />
         )}
       </div>
@@ -674,7 +607,13 @@ export function Reader({
           {/* Reading mode */}
           <button
             type="button"
-            onClick={() => setReadingMode((m) => m === "horizontal" ? "vertical" : "horizontal")}
+            onClick={() => {
+              setReadingMode((m) => {
+                const next = m === "horizontal" ? "vertical" : "horizontal";
+                setToast(next === "vertical" ? "Vertical" : "Horizontal");
+                return next;
+              });
+            }}
             className="reader-icon-btn"
             title={isVertical ? "Horizontal" : "Vertical"}
           >
@@ -692,31 +631,65 @@ export function Reader({
           </button>
 
           {/* TTS */}
-          <button
-            type="button"
-            onClick={() => {
-              if (ttsPlaying) { if (ttsPaused) resumeTTS(); else pauseTTS(); }
-              else startTTS();
-            }}
-            className={`reader-icon-btn ${ttsPlaying ? "active" : ""}`}
-            title={ttsPlaying ? (ttsPaused ? "Resume" : "Pause") : "Read aloud"}
-          >
-            {ttsPlaying ? (
-              ttsPaused ? (
-                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                if (ttsPlaying) { if (ttsPaused) resumeTTS(); else pauseTTS(); }
+                else startTTS();
+              }}
+              onContextMenu={(e) => { e.preventDefault(); setShowVoiceSelector((v) => !v); }}
+              className={`reader-icon-btn ${ttsPlaying ? "active" : ""}`}
+              title={ttsPlaying ? (ttsPaused ? "Resume" : "Pause") : "Read aloud (long-press for voice)"}
+            >
+              {ttsPlaying ? (
+                ttsPaused ? (
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                  </svg>
+                )
               ) : (
-                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                 </svg>
-              )
-            ) : (
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-              </svg>
+              )}
+            </button>
+            {showVoiceSelector && (
+              <div className={`absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800 z-50`}>
+                <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Voice</div>
+                <div className="max-h-40 overflow-y-auto custom-scrollbar">
+                  {ttsVoices.length === 0 ? (
+                    <p className="text-xs text-gray-400 py-1">No voices for this language</p>
+                  ) : (
+                    ttsVoices.map((v) => (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => { setActiveVoice(v.id); setShowVoiceSelector(false); setToast(`Voice: ${v.name}`); }}
+                        className={`w-full rounded px-2 py-1 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                          getActiveVoiceId() === v.id ? "bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200" : ""
+                        }`}
+                      >
+                        <div className="font-medium">{v.name}</div>
+                        <div className="text-gray-400">{v.lang} · {v.engine === "native" ? "Device" : "Browser"}</div>
+                      </button>
+                    ))
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowVoiceSelector(false)}
+                  className="mt-1 w-full rounded px-2 py-1 text-xs text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                >
+                  Close
+                </button>
+              </div>
             )}
-          </button>
+          </div>
           {ttsPlaying && (
             <button
               type="button"
@@ -729,18 +702,6 @@ export function Reader({
               </svg>
             </button>
           )}
-
-          {/* Grammar highlight */}
-          <button
-            type="button"
-            onClick={() => changeHighlightMode(highlightMode === "grammar" ? "unknown" : "grammar")}
-            className={`reader-icon-btn ${highlightMode === "grammar" ? "active" : ""}`}
-            title="Grammar"
-          >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-          </button>
 
           {/* Reading filter */}
           <button
@@ -779,7 +740,7 @@ export function Reader({
             </button>
             <span className="ml-3 font-semibold">Chapters</span>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
             {book.chapters.map((ch, i) => (
               <button
                 key={ch.id}
@@ -827,6 +788,9 @@ export function Reader({
           }
         />
       )}
+
+      {/* Toast notification */}
+      {toast && <Toast message={toast} onDone={() => setToast(null)} />}
     </div>
   );
 }

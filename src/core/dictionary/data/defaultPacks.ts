@@ -43,11 +43,12 @@ const EXTRA_EN_DICTIONARY: readonly DictionaryEntry[] = [
 
 /** Bundled offline default dictionary derived from the JLPT wordlist glosses. */
 function jaDefaultEntries(): DictionaryEntry[] {
-  return JLPT_JA_SAMPLE.map(([kanji, kana, gloss]) => ({
+  return JLPT_JA_SAMPLE.map(([kanji, kana, gloss, level]) => ({
     word: kanji,
     readings: [kana],
     definition: gloss,
     source: "JLPT (bundled)",
+    level,
   }));
 }
 

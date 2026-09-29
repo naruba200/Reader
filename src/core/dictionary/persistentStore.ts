@@ -18,7 +18,6 @@ export class PersistentDictionaryStore implements DictionaryStore {
   private readonly backend: IndexedDbDictionaryStore;
   private searchIndex?: SortedSearchIndex;
   private snapshotEntries?: DictionaryEntry[];
-  private snapshotTotal = 0;
   private indexState: IndexState = "idle";
   private indexStateListeners = new Set<(s: IndexState) => void>();
   private snapshotBuildPromise?: Promise<void>;
@@ -72,7 +71,6 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
     this.snapshotEntries = undefined;
-    this.snapshotTotal = 0;
     this.snapshotBuildPromise = undefined;
     this.setIndexState("idle");
   }
@@ -86,7 +84,6 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
     this.snapshotEntries = undefined;
-    this.snapshotTotal = 0;
     this.snapshotBuildPromise = undefined;
     this.setIndexState("idle");
     void this.rebuildSnapshot();
@@ -97,7 +94,6 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
     this.snapshotEntries = undefined;
-    this.snapshotTotal = 0;
     this.snapshotBuildPromise = undefined;
     this.setIndexState("idle");
     void this.rebuildSnapshot();
@@ -151,7 +147,6 @@ export class PersistentDictionaryStore implements DictionaryStore {
 
       // Cache in memory
       this.snapshotEntries = allEntries;
-      this.snapshotTotal = allEntries.length;
       this.searchIndex = new SortedSearchIndex(allRecords);
       this.setIndexState("ready");
 
@@ -168,7 +163,7 @@ export class PersistentDictionaryStore implements DictionaryStore {
 
   /**
    * Load snapshot from IndexedDB cache (fast ~50ms) or trigger rebuild.
-   * Populates this.snapshotEntries, this.snapshotTotal, this.searchIndex.
+   * Populates this.snapshotEntries and this.searchIndex.
    */
   private async ensureSnapshot(): Promise<void> {
     // Already loaded in memory
@@ -179,7 +174,6 @@ export class PersistentDictionaryStore implements DictionaryStore {
       const cached = await this.backend.getEntriesSnapshot();
       if (cached && cached.entries.length > 0) {
         this.snapshotEntries = cached.entries;
-        this.snapshotTotal = cached.total;
         this.searchIndex = new SortedSearchIndex(cached.searchIndex);
         this.setIndexState("ready");
         return;
@@ -195,18 +189,26 @@ export class PersistentDictionaryStore implements DictionaryStore {
   // ----- table view -----
 
   /**
-   * Return a paginated slice of unique entries for the table view.
+   * Return a paginated slice of unique entries, optionally filtered by source or level.
    * Uses the pre-built snapshot for O(1) array slicing.
    */
   async getPage(
     offset: number,
     limit: number,
+    filters?: { source?: string; level?: string },
   ): Promise<{ entries: DictionaryEntry[]; total: number }> {
     await this.ensureSnapshot();
     if (this.snapshotEntries) {
+      let entries = this.snapshotEntries;
+      if (filters?.source) {
+        entries = entries.filter((e) => e.source === filters.source);
+      }
+      if (filters?.level) {
+        entries = entries.filter((e) => e.level === filters.level);
+      }
       return {
-        entries: this.snapshotEntries.slice(offset, offset + limit),
-        total: this.snapshotTotal,
+        entries: entries.slice(offset, offset + limit),
+        total: entries.length,
       };
     }
     // Fallback: cursor scan (shouldn't happen after snapshot is built)

@@ -6,6 +6,7 @@ import { parserForFileName } from "../core/books";
 import { Reader } from "../reader/Reader";
 import { useTheme } from "./ThemeContext";
 import { DictionaryPage } from "./DictionaryPage";
+import { DownloadsPage } from "./DownloadsPage";
 import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { getKuromojiTokenizer } from "../core/language";
 import {
@@ -14,7 +15,7 @@ import {
   type StoredProgress,
 } from "../core/library";
 
-type View = "library" | "reader" | "dictionary";
+type View = "library" | "reader" | "dictionary" | "downloads";
 type LibraryViewMode = "grid" | "list";
 type LibrarySort = "recent" | "title" | "added" | "language";
 
@@ -37,12 +38,6 @@ function saveBookCache(books: StoredBookMeta[]): void {
   } catch {
     /* storage full/unavailable */
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const LANG_COLORS: Record<string, string> = {
@@ -121,6 +116,7 @@ export function App() {
       if (closeHandlerRef.current) { closeHandlerRef.current(); return; }
       if (viewRef.current === "reader") { setActive(null); setView("library"); }
       else if (viewRef.current === "dictionary") { setView(activeRef.current ? "reader" : "library"); }
+      else if (viewRef.current === "downloads") { setView("library"); }
       else { void CapApp.exitApp(); }
     }).then((handle) => { remove = handle.remove; });
     return () => { remove?.(); };
@@ -246,6 +242,7 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
+      {view !== "reader" && (
       <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
         <button
           type="button"
@@ -262,18 +259,25 @@ export function App() {
         >
           Dictionary
         </button>
-        {activeDownloads.count > 0 && (
-          <button
-            type="button"
-            onClick={() => setView("dictionary")}
-            className="flex items-center gap-1.5 rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40 dark:text-blue-200 dark:hover:bg-blue-900/60"
-            title="Dictionary packs are downloading"
-          >
-            <span className="animate-pulse">↓</span>
-            {formatBytes(activeDownloads.received)}
-            {activeDownloads.total ? ` / ${formatBytes(activeDownloads.total)}` : ""}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => setView("downloads")}
+          className={`rounded border px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700 ${
+            activeDownloads.count > 0
+              ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40 dark:text-blue-200 dark:hover:bg-blue-900/60"
+              : "border-gray-300 dark:border-gray-600"
+          }`}
+          title="Manage dictionary packs"
+        >
+          {activeDownloads.count > 0 ? (
+            <span className="flex items-center gap-1.5">
+              <span className="animate-pulse">↓</span>
+              Downloads
+            </span>
+          ) : (
+            "Downloads"
+          )}
+        </button>
         <label className="cursor-pointer rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700">
           Import…
           <input
@@ -292,6 +296,7 @@ export function App() {
           {theme === "dark" ? "☀️" : "🌙"}
         </button>
       </header>
+      )}
 
       {error && (
         <div className="mx-4 mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/40 dark:text-red-200">
@@ -320,6 +325,13 @@ export function App() {
           <DictionaryPage
             onBack={() => setView(active ? "reader" : "library")}
             initial={dictInitial}
+          />
+        </div>
+      ) : view === "downloads" ? (
+        <div className="min-h-0 flex-1">
+          <DownloadsPage
+            onBack={() => setView("library")}
+            onOpenWord={(lang, word) => { openDictionary(lang, word); }}
           />
         </div>
       ) : (

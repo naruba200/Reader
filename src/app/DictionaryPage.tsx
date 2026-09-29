@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DictionaryEntry, LanguageCode } from "../core/types";
 import {
-  bundledDefaultPack,
   DICTIONARY_PACKS,
-  formatBytes,
   getDictionaryStore,
-  useDictionaryManager,
 } from "../core/dictionary";
-import type { IndexState } from "../core/dictionary/persistentStore";
 import { packKey } from "../core/dictionary/downloadManager";
-import type { PackDefinition } from "../core/dictionary/packs";
+import type { IndexState } from "../core/dictionary/persistentStore";
+import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { EntryCard } from "../reader/EntryCard";
 
 export interface DictionaryPageProps {
@@ -31,7 +28,6 @@ interface SearchResult {
 
 const HISTORY_KEY = "smart-reader-dict-history";
 const SUPPORTED: readonly LanguageCode[] = ["ja", "en"];
-const PAGE_SIZE_OPTIONS = [50, 100, 200];
 
 function loadHistory(): HistoryItem[] {
   try {
@@ -63,20 +59,53 @@ const LANG_LABEL: Record<LanguageCode, string> = {
   zh: "中文",
 };
 
-function splitOnKun(readings?: string[]): { onReading: string; kunReading: string } {
-  if (!readings || readings.length === 0) return { onReading: "", kunReading: "" };
-  const on: string[] = [];
-  const kun: string[] = [];
-  for (const r of readings) {
-    const hasKatakana = /[\u30A0-\u30FF]/.test(r);
-    const hasHiragana = /[\u3040-\u309F]/.test(r);
-    if (hasKatakana && !hasHiragana) {
-      on.push(r);
-    } else {
-      kun.push(r);
+const JLPT_LEVELS = ["N5", "N4", "N3", "N2", "N1"] as const;
+
+const SOURCE_ICONS: Record<string, string> = {
+  JMDict: "📚",
+  "KANJIDIC2": "🔤",
+  "Tae Kim's Grammar": "📖",
+  "JLPT Grammar": "📝",
+  WordNet: "🌐",
+};
+
+type CardData =
+  | { type: "jlpt"; level: string }
+  | { type: "source"; source: string; label: string; icon: string };
+
+// Cache for parsed JLPT TSV: level -> word[]
+let jlptCache: Record<string, string[]> | null = null;
+let jlptCachePromise: Promise<Record<string, string[]>> | null = null;
+
+async function loadJlptWords(): Promise<Record<string, string[]>> {
+  if (jlptCache) return jlptCache;
+  if (jlptCachePromise) return jlptCachePromise;
+
+  jlptCachePromise = (async () => {
+    try {
+      const resp = await fetch("/dict/jlpt.ja.tsv");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      const result: Record<string, string[]> = {};
+      for (const line of text.split("\n")) {
+        if (line.startsWith("#") || !line.trim()) continue;
+        const tab = line.indexOf("\t");
+        if (tab === -1) continue;
+        const word = line.slice(0, tab).trim();
+        const level = line.slice(tab + 1).trim();
+        if (!word || !level) continue;
+        if (!result[level]) result[level] = [];
+        result[level].push(word);
+      }
+      jlptCache = result;
+      return result;
+    } catch {
+      jlptCache = {};
+      return {};
     }
-  }
-  return { onReading: on.join(", "), kunReading: kun.join(", ") };
+  })();
+
+  return jlptCachePromise;
 }
 
 export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
@@ -85,20 +114,34 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selected, setSelected] = useState<{ surface: string; entry?: DictionaryEntry } | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
-  const [viewMode, setViewMode] = useState<"list" | "table">("list");
 
-  // Paginated table state
-  const [pageSize, setPageSize] = useState(100);
-  const [currentPage, setCurrentPage] = useState(0);
-  const [pageEntries, setPageEntries] = useState<DictionaryEntry[]>([]);
-  const [totalEntries, setTotalEntries] = useState(0);
-  const [pageLoading, setPageLoading] = useState(false);
+  // Word list state (when a card is opened)
+  const [activeCard, setActiveCard] = useState<CardData | null>(null);
+  const [listEntries, setListEntries] = useState<DictionaryEntry[]>([]);
+  const [listTotal, setListTotal] = useState(0);
+  const [listPage, setListPage] = useState(0);
+  const [listLoading, setListLoading] = useState(false);
+  const LIST_PAGE_SIZE = 50;
+
+  // JMDict installed state (for N3-N1 availability)
+  const [jmdictInstalled, setJmdictInstalled] = useState(false);
 
   // Search index state
   const [indexState, setIndexState] = useState<IndexState>("idle");
   const indexStateRef = useRef<IndexState>("idle");
 
-  const manager = useDictionaryManager(SUPPORTED);
+  // Check if JMDict is installed
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      const state = dictionaryManager.getState();
+      const jmdictKey = packKey({ language: "ja", source: "JMDict", version: "", fileName: "", estimatedBytes: 0 });
+      if (!cancelled) setJmdictInstalled(!!state.infos[jmdictKey]);
+    };
+    void check();
+    const unsub = dictionaryManager.subscribe(() => void check());
+    return () => { cancelled = true; unsub(); };
+  }, []);
 
   // Subscribe to index state changes
   useEffect(() => {
@@ -107,7 +150,6 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
       indexStateRef.current = s;
       setIndexState(s);
     });
-    // Check current state in case it changed between render and effect
     const current = store.getIndexState();
     if (current !== indexStateRef.current) {
       indexStateRef.current = current;
@@ -116,30 +158,62 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
     return unsub;
   }, [language]);
 
-  // Load paginated entries when switching to table view or changing page
+  // Load word list when a card is active
   useEffect(() => {
-    if (viewMode !== "table") return;
+    if (!activeCard) return;
     let cancelled = false;
-    setPageLoading(true);
-    void (async () => {
-      const store = getDictionaryStore(language);
-      const offset = currentPage * pageSize;
-      const { entries, total } = await store.getPage(offset, pageSize);
-      if (!cancelled) {
-        setPageEntries(entries);
-        setTotalEntries(total);
-        setPageLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [viewMode, language, currentPage, pageSize]);
+    setListLoading(true);
 
-  // Reset table state when language changes
+    if (activeCard.type === "source") {
+      // Source cards: use getPage with source filter (fast)
+      void (async () => {
+        const store = getDictionaryStore(language);
+        const offset = listPage * LIST_PAGE_SIZE;
+        const { entries, total } = await store.getPage(offset, LIST_PAGE_SIZE, { source: activeCard.source });
+        if (!cancelled) {
+          setListEntries(entries);
+          setListTotal(total);
+          setListLoading(false);
+        }
+      })();
+    } else {
+      // JLPT cards: fetch TSV, then look up words in dictionary
+      void (async () => {
+        const jlptWords = await loadJlptWords();
+        const wordsForLevel = jlptWords[activeCard.level] ?? [];
+        const store = getDictionaryStore(language);
+        const offset = listPage * LIST_PAGE_SIZE;
+        const pageWords = wordsForLevel.slice(offset, offset + LIST_PAGE_SIZE);
+
+        // Look up each word in the dictionary
+        const entries: DictionaryEntry[] = [];
+        for (const word of pageWords) {
+          const entry = await store.lookup(word);
+          if (entry) {
+            entries.push(entry);
+          } else {
+            // Create a minimal entry for words not in the dictionary
+            entries.push({ word, definition: "" });
+          }
+        }
+
+        if (!cancelled) {
+          setListEntries(entries);
+          setListTotal(wordsForLevel.length);
+          setListLoading(false);
+        }
+      })();
+    }
+
+    return () => { cancelled = true; };
+  }, [activeCard, listPage, language]);
+
+  // Reset list when card changes
   useEffect(() => {
-    setCurrentPage(0);
-    setPageEntries([]);
-    setTotalEntries(0);
-  }, [language]);
+    setListPage(0);
+    setListEntries([]);
+    setListTotal(0);
+  }, [activeCard]);
 
   // Search with debounce
   useEffect(() => {
@@ -198,43 +272,42 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
     setSelected(null);
     setResults([]);
     setQuery("");
+    setActiveCard(null);
   };
 
-  const switchViewMode = (mode: "list" | "table") => {
-    setViewMode(mode);
-    if (mode === "list") {
-      setPageEntries([]);
-      setTotalEntries(0);
-    }
+  const openCard = (card: CardData) => {
+    if (card.type === "jlpt" && !jmdictInstalled) return;
+    setActiveCard(card);
+    setSelected(null);
+    setQuery("");
   };
 
-  const totalPages = Math.ceil(totalEntries / pageSize);
-  const bundledCount = bundledDefaultPack(language).length;
+  const listTotalPages = Math.ceil(listTotal / LIST_PAGE_SIZE);
+
+  // Source cards for current language
+  const sourceCards: Extract<CardData, { type: "source" }>[] = (DICTIONARY_PACKS[language] ?? []).map((pack) => ({
+    type: "source" as const,
+    source: pack.source,
+    label: pack.source,
+    icon: SOURCE_ICONS[pack.source] ?? "📖",
+  }));
 
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
         <button
           type="button"
-          onClick={onBack}
+          onClick={() => {
+            if (selected) { setSelected(null); return; }
+            if (activeCard) { setActiveCard(null); return; }
+            onBack();
+          }}
           className="rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
         >
-          ← Library
+          ← {selected ? "Back" : activeCard ? "Cards" : "Library"}
         </button>
         <h1 className="text-lg font-bold">Dictionary</h1>
         <div className="ml-auto flex gap-2">
-          <button
-            type="button"
-            onClick={() => switchViewMode(viewMode === "list" ? "table" : "list")}
-            className={`rounded border px-2 py-1 text-sm ${
-              viewMode === "table"
-                ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
-                : "border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
-            }`}
-            title={viewMode === "table" ? "List view" : "Table view"}
-          >
-            {viewMode === "table" ? "☰" : "▦"}
-          </button>
           {SUPPORTED.map((lang) => (
             <button
               key={lang}
@@ -253,6 +326,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {/* Search bar */}
         <div className="mb-4 flex items-center gap-2">
           <input
             type="search"
@@ -274,19 +348,14 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         </div>
 
         {selected ? (
+          /* Entry detail view */
           <div>
-            <button
-              type="button"
-              onClick={() => setSelected(null)}
-              className="mb-3 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-            >
-              ← Back to results
-            </button>
             <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
               <EntryCard word={selected.surface} entry={selected.entry} />
             </div>
           </div>
         ) : query.trim() ? (
+          /* Search results */
           <div>
             <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
               {results.length} result{results.length === 1 ? "" : "s"}
@@ -314,154 +383,134 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
               </ul>
             )}
           </div>
-        ) : viewMode === "table" ? (
+        ) : activeCard ? (
+          /* Word list for a selected card */
           <div>
-            {pageLoading ? (
-              <p className="text-sm text-gray-400">Loading entries…</p>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-sm font-semibold">
+                {activeCard.type === "jlpt" ? `JLPT ${activeCard.level}` : activeCard.label}
+              </span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {listTotal.toLocaleString()} words
+              </span>
+            </div>
+
+            {listLoading ? (
+              <p className="text-sm text-gray-400">Loading…</p>
+            ) : listEntries.length === 0 ? (
+              <p className="text-sm text-gray-400">No entries found.</p>
             ) : (
               <>
-                {/* Pagination controls */}
-                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <span>{totalEntries.toLocaleString()} entries</span>
-                  <span>·</span>
-                  <span>Page {currentPage + 1} of {totalPages}</span>
-                  <span>·</span>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => {
-                      setPageSize(Number(e.target.value));
-                      setCurrentPage(0);
-                    }}
-                    className="rounded border border-gray-300 bg-white px-1 py-0.5 text-xs dark:border-gray-600 dark:bg-gray-800"
-                  >
-                    {PAGE_SIZE_OPTIONS.map((n) => (
-                      <option key={n} value={n}>{n} / page</option>
-                    ))}
-                  </select>
-                  <div className="ml-auto flex gap-1">
+                <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {listEntries.map((entry, i) => (
+                    <li key={`${entry.word}:${listPage * LIST_PAGE_SIZE + i}`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelected({ surface: entry.word, entry });
+                          setHistory(pushHistory({ language, word: entry.word, at: Date.now() }));
+                        }}
+                        className="w-full px-1 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                      >
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-base font-medium">{entry.word}</span>
+                          {entry.readings && entry.readings.length > 0 && entry.readings[0] !== entry.word && (
+                            <span className="text-sm text-gray-500 dark:text-gray-400">
+                              {entry.readings[0]}
+                            </span>
+                          )}
+                        </div>
+                        {entry.definition && (
+                          <div className="mt-0.5 text-sm text-gray-600 dark:text-gray-300 line-clamp-1">
+                            {entry.definition}
+                          </div>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+
+                {/* Pagination */}
+                {listTotalPages > 1 && (
+                  <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                     <button
                       type="button"
-                      disabled={currentPage === 0}
-                      onClick={() => setCurrentPage((p) => p - 1)}
-                      className="rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                      disabled={listPage === 0}
+                      onClick={() => setListPage((p) => p - 1)}
+                      className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
                     >
                       ← Prev
                     </button>
+                    <span>
+                      {listPage + 1} / {listTotalPages}
+                    </span>
                     <button
                       type="button"
-                      disabled={currentPage >= totalPages - 1}
-                      onClick={() => setCurrentPage((p) => p + 1)}
-                      className="rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
+                      disabled={listPage >= listTotalPages - 1}
+                      onClick={() => setListPage((p) => p + 1)}
+                      className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
                     >
                       Next →
                     </button>
                   </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Word</th>
-                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">On</th>
-                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Kun</th>
-                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">POS</th>
-                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Definition</th>
-                        <th className="sticky top-0 bg-white px-3 py-2 dark:bg-gray-900">Examples</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                      {pageEntries.map((entry, i) => {
-                        const { onReading, kunReading } = splitOnKun(entry.readings);
-                        return (
-                          <tr
-                            key={`${entry.word}:${currentPage * pageSize + i}`}
-                            className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
-                            onClick={() => {
-                              setSelected({ surface: entry.word, entry });
-                              setHistory(pushHistory({ language, word: entry.word, at: Date.now() }));
-                            }}
-                          >
-                            <td className="whitespace-nowrap px-3 py-2 font-medium">{entry.word}</td>
-                            <td className="whitespace-nowrap px-3 py-2 text-gray-500 dark:text-gray-400">
-                              {onReading || "—"}
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-2 text-gray-500 dark:text-gray-400">
-                              {kunReading || "—"}
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-                              {entry.pos ?? "—"}
-                            </td>
-                            <td className="px-3 py-2 text-gray-600 dark:text-gray-300">
-                              {entry.definition}
-                            </td>
-                            <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 max-w-xs truncate">
-                              {entry.examples?.slice(0, 2).join(" / ") ?? "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Bottom pagination */}
-                <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <button
-                    type="button"
-                    disabled={currentPage === 0}
-                    onClick={() => setCurrentPage(0)}
-                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
-                  >
-                    « First
-                  </button>
-                  <button
-                    type="button"
-                    disabled={currentPage === 0}
-                    onClick={() => setCurrentPage((p) => p - 1)}
-                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
-                  >
-                    ‹ Prev
-                  </button>
-                  <span>
-                    Page {currentPage + 1} / {totalPages}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={currentPage >= totalPages - 1}
-                    onClick={() => setCurrentPage((p) => p + 1)}
-                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
-                  >
-                    Next ›
-                  </button>
-                  <button
-                    type="button"
-                    disabled={currentPage >= totalPages - 1}
-                    onClick={() => setCurrentPage(totalPages - 1)}
-                    className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
-                  >
-                    Last »
-                  </button>
-                </div>
+                )}
               </>
             )}
           </div>
         ) : (
+          /* Category cards home */
           <div className="space-y-6">
-            <section>
-              <h2 className="mb-2 text-sm font-semibold">Dictionary packs</h2>
-              {SUPPORTED.map((lang) => (
-                <div key={lang} className="mb-3">
-                  <h3 className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">
-                    {LANG_LABEL[lang]}
-                  </h3>
-                  {(DICTIONARY_PACKS[lang] ?? []).map((def) => (
-                    <PackCard key={`${lang}:${def.source}`} def={def} manager={manager} />
+            {/* JLPT Level cards */}
+            {language === "ja" && (
+              <section>
+                <h2 className="mb-2 text-sm font-semibold">JLPT Levels</h2>
+                <div className="grid grid-cols-5 gap-2">
+                  {JLPT_LEVELS.map((level) => (
+                    <button
+                      key={level}
+                      type="button"
+                      disabled={!jmdictInstalled}
+                      onClick={() => openCard({ type: "jlpt", level })}
+                      className={`rounded-lg border p-3 text-center transition-shadow ${
+                        jmdictInstalled
+                          ? "border-gray-200 bg-white shadow-sm hover:shadow dark:border-gray-700 dark:bg-gray-800"
+                          : "cursor-not-allowed border-gray-100 bg-gray-50 opacity-50 dark:border-gray-800 dark:bg-gray-900"
+                      }`}
+                    >
+                      <div className="text-lg font-bold">{level}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {jmdictInstalled ? "Open" : "Need JMDict"}
+                      </div>
+                    </button>
                   ))}
                 </div>
-              ))}
+                {!jmdictInstalled && (
+                  <p className="mt-1 text-xs text-gray-400">
+                    Download the JMDict pack in Downloads to access JLPT word lists.
+                  </p>
+                )}
+              </section>
+            )}
+
+            {/* Source/pack cards */}
+            <section>
+              <h2 className="mb-2 text-sm font-semibold">Dictionaries</h2>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {sourceCards.map((card) => (
+                  <button
+                    key={card.source}
+                    type="button"
+                    onClick={() => openCard(card)}
+                    className="rounded-lg border border-gray-200 bg-white p-3 text-left shadow-sm transition-shadow hover:shadow dark:border-gray-700 dark:bg-gray-800"
+                  >
+                    <div className="text-2xl">{card.icon}</div>
+                    <div className="mt-1 text-sm font-medium">{card.label}</div>
+                  </button>
+                ))}
+              </div>
             </section>
 
+            {/* Recently looked up */}
             {history.length > 0 && (
               <section>
                 <h2 className="mb-2 text-sm font-semibold">Recently looked up</h2>
@@ -470,10 +519,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                     <button
                       key={`${h.language}:${h.word}:${i}`}
                       type="button"
-                      onClick={() => {
-                        switchLanguage(h.language);
-                        openLookup(h.language, h.word);
-                      }}
+                      onClick={() => openLookup(h.language, h.word)}
                       className="rounded-full border border-gray-300 bg-white px-3 py-1 text-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700"
                     >
                       {h.word}
@@ -483,123 +529,8 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                 </div>
               </section>
             )}
-
-            <p className="text-xs text-gray-400">
-              Bundled default for {LANG_LABEL[language]}: {bundledCount} words.
-              Download a full pack below or import your own file to expand lookups.
-            </p>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function PackCard({
-  def,
-  manager,
-}: {
-  def: PackDefinition;
-  manager: ReturnType<typeof useDictionaryManager>;
-}) {
-  const key = packKey(def);
-  const info = manager.infos[key];
-  const prog = manager.progress[key];
-  const error = manager.errors[key];
-  const label = def.source;
-
-  const importInputId = `dict-import-${def.language}-${def.source}`;
-
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-      <div className="flex items-center gap-2">
-        <span className="font-medium">{label}</span>
-        <span
-          className={`ml-auto rounded px-2 py-0.5 text-xs ${
-            prog
-              ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200"
-              : info
-                ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200"
-                : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300"
-          }`}
-        >
-          {prog ? "Downloading" : info ? "Installed" : "Not installed"}
-        </span>
-      </div>
-
-      {info && (
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          v{info.version} · {info.count.toLocaleString()} entries · {formatBytes(info.sizeBytes)}
-          {info.source !== def.source && ` · from ${info.source}`}
-        </p>
-      )}
-
-      {prog && (
-        <div className="mt-2">
-          <div className="h-2 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
-            <div
-              className="h-full bg-blue-500 transition-all"
-              style={{
-                width: `${prog.total && prog.total > 0 ? Math.min(100, (prog.received / prog.total) * 100) : prog.count > 0 ? 50 : 0}%`,
-              }}
-            />
-          </div>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            {prog.phase === "download"
-              ? `Downloading ${formatBytes(prog.received)}${prog.total ? ` / ${formatBytes(prog.total)}` : ""}`
-              : `Writing ${prog.count.toLocaleString()} entries to storage…`}
-          </p>
-        </div>
-      )}
-
-      {error && (
-        <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>
-      )}
-
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={!!prog}
-          onClick={() => void manager.download(def)}
-          className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700"
-        >
-          {info ? "Re-download" : "Download"} ({formatBytes(def.estimatedBytes)})
-        </button>
-        {prog && (
-          <button
-            type="button"
-            onClick={() => manager.cancel(key)}
-            className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
-          >
-            Cancel
-          </button>
-        )}
-        {info && (
-          <button
-            type="button"
-            onClick={() => void manager.remove(def)}
-            className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/30"
-          >
-            Delete
-          </button>
-        )}
-        <label
-          htmlFor={importInputId}
-          className="cursor-pointer rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
-        >
-          Import file…
-        </label>
-        <input
-          id={importInputId}
-          type="file"
-          accept=".ndjson,.json,.txt"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) void manager.importFile(def.language, file);
-            e.target.value = "";
-          }}
-        />
       </div>
     </div>
   );
