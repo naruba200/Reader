@@ -20,8 +20,11 @@ import { Toast } from "../components/Toast";
 import {
   getActiveEngine,
   getActiveVoiceId,
+  setActiveEngine,
   setActiveVoice,
-  getVoicesForLanguage,
+  getAllEngines,
+  getAllVoices,
+  type TTSEngine,
   type TTSVoice,
 } from "../core/tts";
 
@@ -167,7 +170,45 @@ export function Reader({
   const [ttsSentenceIndex, setTtsSentenceIndex] = useState(-1);
   const [showVoiceSelector, setShowVoiceSelector] = useState(false);
   const [ttsVoices, setTtsVoices] = useState<TTSVoice[]>([]);
+  const [ttsEngineId, setTtsEngineId] = useState<string>(() => getActiveEngine().id);
   const sentencesRef = useRef<string[]>([]);
+  // Mobile long-press (the voice selector used to be desktop right-click only)
+  const longPressTimer = useRef<number | null>(null);
+  const longPressFired = useRef(false);
+
+  const cancelTtsLongPress = useCallback(() => {
+    if (longPressTimer.current !== null) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const startTtsLongPress = useCallback(() => {
+    cancelTtsLongPress();
+    longPressFired.current = false;
+    longPressTimer.current = window.setTimeout(() => {
+      longPressFired.current = true;
+      longPressTimer.current = null;
+      setShowVoiceSelector((v) => !v);
+    }, 550);
+  }, [cancelTtsLongPress]);
+
+  // TTS - load voices for current language (and refresh when engine changes)
+  const reloadTtsVoices = useCallback((engineId: string) => {
+    const voices = getAllVoices().filter(
+      (v) => v.engine === engineId && v.lang.startsWith(book.language),
+    );
+    setTtsVoices(voices);
+  }, [book.language]);
+
+  const switchTtsEngine = useCallback((engineId: string) => {
+    setActiveEngine(engineId);
+    setActiveVoice(null);
+    setTtsEngineId(engineId);
+    reloadTtsVoices(engineId);
+    const engine = getAllEngines().find((e) => e.id === engineId);
+    setToast(`Voice engine: ${engine?.name ?? engineId}`);
+  }, [reloadTtsVoices]);
 
   // Controls visibility management
   const toggleControls = useCallback(() => {
@@ -380,14 +421,17 @@ export function Reader({
     [goNext, goPrev, navigationMode],
   );
 
-  // TTS - load voices for current language
+  // TTS - load voices for current language; also refresh when the voice
+  // selector opens, since engine voices load asynchronously.
   useEffect(() => {
-    const voices = getVoicesForLanguage(book.language);
-    setTtsVoices(voices);
-  }, [book.language]);
+    reloadTtsVoices(ttsEngineId);
+  }, [book.language, ttsEngineId, showVoiceSelector, reloadTtsVoices]);
 
-  // TTS - sentence-level sequential speaking
-  const speakSentence = useCallback(async (sentences: string[], index: number) => {
+  // TTS - sentence-level sequential speaking.
+  // Tries the active engine first, then falls back to any other available
+  // engine once. If every engine fails, the user gets a toast instead of
+  // the old behavior: silence and a stuck pause icon.
+  const speakSentence = useCallback(async (sentences: string[], index: number): Promise<void> => {
     if (index >= sentences.length) {
       setTtsPlaying(false);
       setTtsPaused(false);
@@ -396,15 +440,36 @@ export function Reader({
     }
     const text = sentences[index];
     if (!text.trim()) {
-      speakSentence(sentences, index + 1);
-      return;
+      return speakSentence(sentences, index + 1);
     }
     setTtsSentenceIndex(index);
-    const engine = getActiveEngine();
-    const voiceId = getActiveVoiceId() ?? ttsVoices[0]?.id;
-    await engine.speak(text, voiceId);
+
+    const active = getActiveEngine();
+    const engines: TTSEngine[] = [active, ...getAllEngines().filter((e) => e.id !== active.id)];
+
+    let spoken = false;
+    for (const engine of engines) {
+      const isActive = engine.id === active.id;
+      const voiceId = isActive
+        ? (getActiveVoiceId() ?? ttsVoices.find((v) => v.engine === engine.id)?.id)
+        : ttsVoices.find((v) => v.engine === engine.id)?.id;
+      try {
+        await engine.speak(text, voiceId);
+        spoken = true;
+        break;
+      } catch (err) {
+        console.warn(`TTS engine "${engine.id}" failed, trying next`, err);
+      }
+    }
+    if (!spoken) {
+      setTtsPlaying(false);
+      setTtsPaused(false);
+      setTtsSentenceIndex(-1);
+      setToast("Read aloud failed — no working voice on this device");
+      return;
+    }
     // Continue to next sentence
-    speakSentence(sentences, index + 1);
+    return speakSentence(sentences, index + 1);
   }, [book.language, ttsVoices]);
 
   const startTTS = useCallback(() => {
@@ -419,7 +484,18 @@ export function Reader({
   }, [chapter.text, speakSentence]);
 
   const pauseTTS = useCallback(() => { getActiveEngine().pause(); setTtsPaused(true); }, []);
-  const resumeTTS = useCallback(() => { getActiveEngine().resume(); setTtsPaused(false); }, []);
+  const resumeTTS = useCallback(() => {
+    const engine = getActiveEngine();
+    if (engine.id === "native") {
+      // Device TTS has no true pause (pause stops it), so resume restarts
+      // the current sentence instead of silently doing nothing.
+      setTtsPaused(false);
+      void speakSentence(sentencesRef.current, Math.max(0, ttsSentenceIndex));
+    } else {
+      engine.resume();
+      setTtsPaused(false);
+    }
+  }, [speakSentence, ttsSentenceIndex]);
   const stopTTS = useCallback(() => {
     getActiveEngine().stop();
     setTtsPlaying(false);
@@ -635,9 +711,18 @@ export function Reader({
             <button
               type="button"
               onClick={() => {
+                // A long-press opens the voice selector instead of speaking;
+                // swallow the click that follows it on touch devices.
+                if (longPressFired.current) {
+                  longPressFired.current = false;
+                  return;
+                }
                 if (ttsPlaying) { if (ttsPaused) resumeTTS(); else pauseTTS(); }
                 else startTTS();
               }}
+              onTouchStart={startTtsLongPress}
+              onTouchEnd={cancelTtsLongPress}
+              onTouchMove={cancelTtsLongPress}
               onContextMenu={(e) => { e.preventDefault(); setShowVoiceSelector((v) => !v); }}
               className={`reader-icon-btn ${ttsPlaying ? "active" : ""}`}
               title={ttsPlaying ? (ttsPaused ? "Resume" : "Pause") : "Read aloud (long-press for voice)"}
@@ -660,6 +745,23 @@ export function Reader({
             </button>
             {showVoiceSelector && (
               <div className={`absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800 z-50`}>
+                <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Engine</div>
+                <div className="mb-2 flex gap-1">
+                  {getAllEngines().map((e) => (
+                    <button
+                      key={e.id}
+                      type="button"
+                      onClick={() => switchTtsEngine(e.id)}
+                      className={`flex-1 rounded px-2 py-1 text-xs font-medium ${
+                        ttsEngineId === e.id
+                          ? "bg-blue-500 text-white"
+                          : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                      }`}
+                    >
+                      {e.name}
+                    </button>
+                  ))}
+                </div>
                 <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Voice</div>
                 <div className="max-h-40 overflow-y-auto custom-scrollbar">
                   {ttsVoices.length === 0 ? (
@@ -675,7 +777,7 @@ export function Reader({
                         }`}
                       >
                         <div className="font-medium">{v.name}</div>
-                        <div className="text-gray-400">{v.lang} · {v.engine === "native" ? "Device" : "Browser"}</div>
+                        <div className="text-gray-400">{v.lang}</div>
                       </button>
                     ))
                   )}

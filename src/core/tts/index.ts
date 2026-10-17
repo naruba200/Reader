@@ -72,14 +72,16 @@ class WebSpeechEngine implements TTSEngine {
   }
 
   async speak(text: string, voiceId?: string, rate?: number): Promise<void> {
-    if (typeof speechSynthesis === "undefined") return;
+    if (typeof speechSynthesis === "undefined") {
+      throw new Error("Browser speech synthesis is not available on this device");
+    }
 
     this.stop();
     this.playing = true;
     this.voiceId = voiceId;
     if (rate !== undefined) this.rate = rate;
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = this.rate;
 
@@ -91,19 +93,43 @@ class WebSpeechEngine implements TTSEngine {
         if (voices[idx]) utterance.voice = voices[idx];
       }
 
-      utterance.onend = () => {
+      let settled = false;
+      const done = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
         this.playing = false;
-        this.onEndCallback?.();
-        resolve();
-      };
-      utterance.onerror = (e) => {
-        if (e.error !== "canceled") console.warn("Web TTS error", e.error);
-        this.playing = false;
-        resolve();
+        if (err) reject(err);
+        else {
+          this.onEndCallback?.();
+          resolve();
+        }
       };
 
-      this.onEndCallback?.(); // clear previous
-      speechSynthesis.speak(utterance);
+      // Watchdog: some WebViews (notably Android's) never fire onend/onerror,
+      // which used to hang the reader's sentence loop forever with no feedback.
+      // Estimate ~15 chars/sec at rate 1.0, clamped to a sane range.
+      const estimatedMs = Math.min(120000, Math.max(8000, ((text.length / 15) * 1000) / this.rate));
+      const watchdog = setTimeout(() => {
+        console.warn("Web TTS watchdog fired — speech end event never arrived");
+        done();
+      }, estimatedMs);
+
+      utterance.onend = () => done();
+      utterance.onerror = (e) => {
+        if (e.error === "canceled") {
+          done(); // user stopped it; not a failure
+        } else {
+          console.warn("Web TTS error", e.error);
+          done(new Error(`Speech failed (${e.error})`));
+        }
+      };
+
+      try {
+        speechSynthesis.speak(utterance);
+      } catch (err) {
+        done(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
@@ -156,20 +182,20 @@ class CapacitorNativeEngine implements TTSEngine {
   }
 
   async speak(text: string, voiceId?: string, rate?: number): Promise<void> {
+    const { TextToSpeech } = await import("@capacitor-community/text-to-speech");
+
+    await this.stop();
+    this.playing = true;
+    if (rate !== undefined) this.rate = rate;
+
+    // Find the voice to determine language
+    let lang = "ja-JP";
+    if (voiceId) {
+      const voice = this.voices.find((v) => v.id === voiceId);
+      if (voice) lang = voice.lang;
+    }
+
     try {
-      const { TextToSpeech } = await import("@capacitor-community/text-to-speech");
-
-      this.stop();
-      this.playing = true;
-      if (rate !== undefined) this.rate = rate;
-
-      // Find the voice to determine language
-      let lang = "ja-JP";
-      if (voiceId) {
-        const voice = this.voices.find((v) => v.id === voiceId);
-        if (voice) lang = voice.lang;
-      }
-
       await TextToSpeech.speak({
         text,
         lang,
@@ -178,11 +204,11 @@ class CapacitorNativeEngine implements TTSEngine {
         volume: 1.0,
         queueStrategy: 0, // Replace
       });
-      this.playing = false;
     } catch (err) {
-      console.warn("Native TTS error", err);
       this.playing = false;
+      throw err instanceof Error ? err : new Error(String(err));
     }
+    this.playing = false;
   }
 
   async stop() {
@@ -194,8 +220,9 @@ class CapacitorNativeEngine implements TTSEngine {
   }
 
   async pause() {
-    // Capacitor TTS doesn't have pause, we stop instead
-    this.playing = false;
+    // The Capacitor plugin has no real pause, so pausing stops playback.
+    // The reader restarts the current sentence on resume.
+    await this.stop();
   }
 
   async resume() {
@@ -220,7 +247,11 @@ function getEngines(): TTSEngine[] {
   if (Capacitor.isNativePlatform()) {
     engines.push(new CapacitorNativeEngine());
   }
-  activeEngineId = loadSetting(TTS_ENGINE_KEY, engines[0].id);
+  // On a real device the native TTS engine is far more reliable than the
+  // WebView's speechSynthesis (which is broken or voiceless on many Android
+  // WebViews), so prefer it there. A previously saved choice is always kept.
+  const defaultEngineId = Capacitor.isNativePlatform() ? "native" : engines[0].id;
+  activeEngineId = loadSetting(TTS_ENGINE_KEY, defaultEngineId);
   activeVoiceId = loadSetting(TTS_VOICE_KEY, null);
   return engines;
 }
