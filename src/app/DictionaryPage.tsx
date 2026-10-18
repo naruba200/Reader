@@ -14,6 +14,7 @@ import { saveWord, isWordSaved } from "../study/wordBank";
 export interface DictionaryPageProps {
   onBack: () => void;
   initial?: { language: LanguageCode; word?: string };
+  onRegisterCloseHandler?: (close: (() => void) | null) => void;
 }
 
 interface HistoryItem {
@@ -110,7 +111,7 @@ async function loadJlptWords(): Promise<Record<string, string[]>> {
   return jlptCachePromise;
 }
 
-export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
+export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: DictionaryPageProps) {
   const [language, setLanguage] = useState<LanguageCode>(initial?.language ?? "ja");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -300,6 +301,23 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
     setQuery("");
   };
 
+  // Android back-button: pop internal sub-views (entry detail, then word
+  // list) before falling through to the tab-level back behavior.
+  useEffect(() => {
+    if (selected) {
+      onRegisterCloseHandler?.(() => setSelected(null));
+    } else if (activeCard) {
+      onRegisterCloseHandler?.(() => {
+        setActiveCard(null);
+        setListEntries([]);
+        setListPage(0);
+      });
+    } else {
+      onRegisterCloseHandler?.(null);
+    }
+    return () => onRegisterCloseHandler?.(null);
+  }, [selected, activeCard, onRegisterCloseHandler]);
+
   const listTotalPages = Math.ceil(listTotal / LIST_PAGE_SIZE);
 
   // Source cards for current language
@@ -312,7 +330,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
+      <header className="flex items-center gap-2 border-b border-gray-200 px-3 py-1.5 dark:border-gray-700">
         <button
           type="button"
           onClick={() => {
@@ -320,18 +338,18 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
             if (activeCard) { setActiveCard(null); return; }
             onBack();
           }}
-          className="rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+          className="rounded-lg px-2.5 py-1.5 text-sm font-medium hover:bg-gray-100 active:scale-95 dark:hover:bg-gray-700"
         >
           ← {selected ? "Back" : activeCard ? "Cards" : "Library"}
         </button>
-        <h1 className="text-lg font-bold">Dictionary</h1>
-        <div className="ml-auto flex gap-2">
+        <h1 className="text-base font-bold tracking-tight">Dictionary</h1>
+        <div className="ml-auto flex gap-1.5">
           {SUPPORTED.map((lang) => (
             <button
               key={lang}
               type="button"
               onClick={() => switchLanguage(lang)}
-              className={`rounded border px-2 py-1 text-sm ${
+              className={`rounded-lg border px-2.5 py-1 text-[13px] font-medium transition-colors ${
                 language === lang
                   ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
                   : "border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
@@ -343,15 +361,15 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {/* Search bar */}
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mb-3 flex items-center gap-2">
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={`Search ${LANG_LABEL[language]}…`}
-            className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800"
+            className="flex-1 rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800"
           />
           {indexState === "building" && (
             <span className="shrink-0 text-xs text-amber-600 dark:text-amber-400">
@@ -368,7 +386,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         {selected ? (
           /* Entry detail view */
           <div>
-            <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
               <EntryCard
                 word={selected.surface}
                 entry={selected.entry}
@@ -392,7 +410,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                     <button
                       type="button"
                       onClick={() => openResult(r.word, r.reading)}
-                      className="w-full px-1 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                      className="w-full rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-gray-800/60 dark:active:bg-gray-700/60"
                     >
                       <span className="text-base font-medium">{r.word}</span>
                       {r.reading && r.reading !== r.word && (
@@ -409,8 +427,8 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         ) : activeCard ? (
           /* Word list for a selected card */
           <div>
-            <div className="mb-3 flex items-center gap-2">
-              <span className="text-sm font-semibold">
+            <div className="mb-2 flex items-baseline gap-2">
+              <span className="text-sm font-bold tracking-tight">
                 {activeCard.type === "jlpt" ? `JLPT ${activeCard.level}` : activeCard.label}
               </span>
               <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -433,7 +451,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                           setSelected({ surface: entry.word, entry });
                           setHistory(pushHistory({ language, word: entry.word, at: Date.now() }));
                         }}
-                        className="w-full px-1 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                        className="w-full rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-gray-800/60 dark:active:bg-gray-700/60"
                       >
                         <div className="flex items-baseline gap-2">
                           <span className="text-base font-medium">{entry.word}</span>
@@ -482,11 +500,11 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
           </div>
         ) : (
           /* Category cards home */
-          <div className="space-y-6">
+          <div className="space-y-5">
             {/* JLPT Level cards */}
             {language === "ja" && (
               <section>
-                <h2 className="mb-2 text-sm font-semibold">JLPT Levels</h2>
+                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">JLPT Levels</h2>
                 <div className="grid grid-cols-5 gap-2">
                   {JLPT_LEVELS.map((level) => (
                     <button
@@ -494,14 +512,14 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
                       type="button"
                       disabled={!jmdictInstalled}
                       onClick={() => openCard({ type: "jlpt", level })}
-                      className={`rounded-lg border p-3 text-center transition-shadow ${
+                      className={`rounded-2xl border p-3 text-center transition-all active:scale-95 ${
                         jmdictInstalled
-                          ? "border-gray-200 bg-white shadow-sm hover:shadow dark:border-gray-700 dark:bg-gray-800"
+                          ? "border-gray-200 bg-white shadow-sm hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
                           : "cursor-not-allowed border-gray-100 bg-gray-50 opacity-50 dark:border-gray-800 dark:bg-gray-900"
                       }`}
                     >
-                      <div className="text-lg font-bold">{level}</div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                      <div className="text-lg font-bold tracking-tight">{level}</div>
+                      <div className="text-[11px] text-gray-500 dark:text-gray-400">
                         {jmdictInstalled ? "Open" : "Need JMDict"}
                       </div>
                     </button>
@@ -517,17 +535,17 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
 
             {/* Source/pack cards */}
             <section>
-              <h2 className="mb-2 text-sm font-semibold">Dictionaries</h2>
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Dictionaries</h2>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {sourceCards.map((card) => (
                   <button
                     key={card.source}
                     type="button"
                     onClick={() => openCard(card)}
-                    className="rounded-lg border border-gray-200 bg-white p-3 text-left shadow-sm transition-shadow hover:shadow dark:border-gray-700 dark:bg-gray-800"
+                    className="rounded-2xl border border-gray-200 bg-white p-3 text-left shadow-sm transition-all hover:shadow-md active:scale-[0.98] dark:border-gray-700 dark:bg-gray-800"
                   >
                     <div className="text-2xl">{card.icon}</div>
-                    <div className="mt-1 text-sm font-medium">{card.label}</div>
+                    <div className="mt-1 text-sm font-medium tracking-tight">{card.label}</div>
                   </button>
                 ))}
               </div>
@@ -536,14 +554,14 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
             {/* Recently looked up */}
             {history.length > 0 && (
               <section>
-                <h2 className="mb-2 text-sm font-semibold">Recently looked up</h2>
-                <div className="flex flex-wrap gap-2">
+                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Recently looked up</h2>
+                <div className="flex flex-wrap gap-1.5">
                   {history.slice(0, 20).map((h, i) => (
                     <button
                       key={`${h.language}:${h.word}:${i}`}
                       type="button"
                       onClick={() => openLookup(h.language, h.word)}
-                      className="rounded-full border border-gray-300 bg-white px-3 py-1 text-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700"
+                      className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[13px] shadow-sm transition-all hover:bg-gray-50 active:scale-95 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
                     >
                       {h.word}
                       <span className="ml-1 text-xs text-gray-400">{LANG_LABEL[h.language]}</span>

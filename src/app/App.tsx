@@ -10,6 +10,7 @@ import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { getKuromojiTokenizer } from "../core/language";
 import { ActionSheet } from "../components/ActionSheet";
 import { SettingsPage } from "./SettingsPage";
+import { useTheme } from "./ThemeContext";
 import { BookSheet } from "./BookSheet";
 import { StudyPage } from "../study/StudyPage";
 import {
@@ -149,6 +150,7 @@ function BottomNav({
 }
 
 export function App() {
+  const { preference: themePreference } = useTheme();
   const [books, setBooks] = useState<StoredBookMeta[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [active, setActive] = useState<ActiveBook | null>(null);
@@ -385,8 +387,17 @@ export function App() {
     { id: "finished", label: "Finished" },
   ];
 
+  // App-wide background tint for the reading themes (the `dark` class
+  // already handles the dark base via Tailwind variants).
+  const appBg =
+    themePreference === "sepia" ? "bg-[rgb(245,241,232)]" :
+    themePreference === "warm" ? "bg-[rgb(255,249,235)]" :
+    themePreference === "dark-warm" ? "bg-[rgb(25,22,18)]" :
+    themePreference === "amoled" ? "bg-black" :
+    "bg-gray-50 dark:bg-gray-900";
+
   return (
-    <div className="flex h-full flex-col bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
+    <div className={`flex h-full flex-col ${appBg} text-gray-900 dark:text-gray-100`}>
       {view === "library" && (
       <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 pt-safe dark:border-gray-700">
         <span className="text-lg font-bold">Smart Reader</span>
@@ -430,6 +441,7 @@ export function App() {
           <DictionaryPage
             onBack={() => setView(active ? "reader" : "library")}
             initial={dictInitial}
+            onRegisterCloseHandler={registerCloseHandler}
           />
         </div>
       ) : view === "downloads" ? (
