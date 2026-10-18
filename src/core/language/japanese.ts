@@ -159,8 +159,11 @@ export interface Deinflection {
  * Basic Japanese deinflector (MVP).
  * Strips common verb/adjective endings and maps the stem back toward the
  * dictionary form. Covers polite forms, past, negative, te-form, potential,
- * desire, passive, and volitional. Not exhaustive — a real morphological
- * analyzer (MeCab / kuromoji) is the production upgrade path.
+ * desire, passive, volitional, causative, 〜てしまう/〜ておく/〜ている
+ * contractions, 〜たら/〜ば conditionals, 〜ず/〜ぬ negatives, the
+ * 〜なければならない family, godan volitional う, and imperatives.
+ * Not exhaustive — a real morphological analyzer (MeCab / kuromoji) is the
+ * production upgrade path.
  */
 export function deinflectJapanese(surface: string): Deinflection {
   const s = surface;
@@ -179,12 +182,119 @@ export function deinflectJapanese(surface: string): Deinflection {
     if (v !== undefined && v.length > 0) candidates.push(v);
   };
 
+  // Kana row tables for the extended rules below.
+  const E_ROW_KANA = "えけげせぜてでねへべぺめれ";
+  const I_ROW_KANA = "いきぎしじちぢにひびぴみり";
+  /** godan te-/ta-stem → dictionary ending (っ→く is the most common reading). */
+  const TE_STEM_MAP: Record<string, string> = {
+    い: "く", ち: "つ", り: "る", き: "く", ぎ: "ぐ",
+    し: "す", み: "む", び: "ぶ", に: "ぬ", ん: "む", っ: "く",
+  };
+  /** e-row → u-row (godan potential, imperative, ば-conditional). */
+  const E_ROW_MAP: Record<string, string> = {
+    け: "く", げ: "ぐ", せ: "す", て: "つ", ね: "ぬ",
+    へ: "ふ", べ: "ぶ", め: "む", れ: "る", え: "う",
+  };
+  /** o-row → u-row (godan volitional う). */
+  const O_ROW_MAP: Record<string, string> = {
+    こ: "く", ご: "ぐ", そ: "す", と: "つ", の: "ぬ",
+    ほ: "ふ", ぼ: "ぶ", も: "む", ろ: "る", よ: "る",
+    お: "う", を: "う",
+  };
+  /** godan a-stem → u-row (negative/causative stems). */
+  const A_ROW_MAP: Record<string, string> = {
+    か: "く", が: "ぐ", さ: "す", た: "つ", な: "ぬ",
+    は: "ふ", ば: "ぶ", ま: "む", ら: "る", わ: "う",
+  };
+
+  /**
+   * Map a negative/a-stem (行か, 食べ, し, 来) back to the dictionary form.
+   * Returns undefined when the stem shape is not recognized.
+   */
+  const stemToDict = (b: string): string | undefined => {
+    if (!b) return undefined;
+    if (b.endsWith("来") || b.endsWith("こ")) return b.slice(0, -1) + "来る";
+    if (b.endsWith("し")) return b.slice(0, -1) + "する";
+    const lc = b.charAt(b.length - 1);
+    if (A_ROW_MAP[lc]) return b.slice(0, -1) + A_ROW_MAP[lc];
+    if (E_ROW_KANA.includes(lc) || I_ROW_KANA.includes(lc)) return b + "る";
+    return undefined;
+  };
+
   // Polite: ます/ません/ました/ませんでした/ましょう → る-form stem
   push(tryEnd("ませんでした"));
   push(tryEnd("ません"));
   push(tryEnd("ました"));
   push(tryEnd("ましょう"));
   push(tryEnd("ます"));
+
+  // 〜てしまう contractions: ちゃう/じゃう/ちまう (食べちゃう→食べる; 読んじゃう→読む).
+  // Placed before the past-tense rules: ちゃった/じゃった end in た.
+  for (const suf of ["ちゃった", "じゃった", "ちゃう", "じゃう", "ちまう"]) {
+    const b = tryEnd(suf);
+    if (b === undefined) continue;
+    const lc = b.charAt(b.length - 1);
+    if (TE_STEM_MAP[lc]) push(b.slice(0, -1) + TE_STEM_MAP[lc]);
+    else push(b + "る");
+    push(b);
+    push(b + (suf.charAt(0) === "じ" ? "で" : "て"));
+  }
+
+  // 〜ておく contractions: とく/どく (食べとく→食べる; 読んどく→読む).
+  for (const suf of ["とく", "どく"]) {
+    const b = tryEnd(suf);
+    if (b === undefined) continue;
+    if (b === "し") {
+      push("する"); // しとく
+      continue;
+    }
+    if (b.length === 1 && isHiragana(b)) continue; // ほどく is a dictionary form
+    const lc = b.charAt(b.length - 1);
+    if (TE_STEM_MAP[lc]) {
+      push(b.slice(0, -1) + TE_STEM_MAP[lc]);
+      if (lc === "っ") push(b.slice(0, -1) + "つ"); // 待っとく→待つ (ambiguous)
+    } else {
+      push(b + "る");
+    }
+    push(b);
+  }
+
+  // てる contraction: ている→てる (見てる→見る; 書いてる→書く).
+  {
+    const b = tryEnd("てる");
+    if (b !== undefined) {
+      if (b === "し") push("する");
+      else if (b === "来" || b === "き") push("来る");
+      else {
+        const lc = b.charAt(b.length - 1);
+        if (TE_STEM_MAP[lc]) push(b.slice(0, -1) + TE_STEM_MAP[lc]);
+        else push(b + "る");
+        push(b);
+      }
+    }
+  }
+
+  // 〜たら/〜だら conditional (食べたら→食べる; 行ったら→行く; 読んだら→読む).
+  {
+    const b = tryEnd("たら");
+    if (b !== undefined) {
+      if (b === "し") push("する");
+      else if (b === "来" || b === "き") push("来る");
+      else {
+        const lc = b.charAt(b.length - 1);
+        if (TE_STEM_MAP[lc]) push(b.slice(0, -1) + TE_STEM_MAP[lc]);
+        else push(b + "る");
+      }
+      push(b);
+    }
+    const d = tryEnd("だら");
+    if (d !== undefined) {
+      const lc = d.charAt(d.length - 1);
+      if (TE_STEM_MAP[lc]) push(d.slice(0, -1) + TE_STEM_MAP[lc]);
+      else push(d + "る");
+      push(d);
+    }
+  }
 
   // Past plain: た/だ (食べた→食べる; 読んだ→読む)
   if (s.endsWith("た")) {
@@ -212,6 +322,60 @@ export function deinflectJapanese(surface: string): Deinflection {
     push(base + "く");
   }
 
+  // 〜ず → ない (行かず→行く; 食べず→食べる; せず→する)
+  {
+    const b = tryEnd("ず");
+    if (b === "せ") push("する");
+    else if (b !== undefined) {
+      push(stemToDict(b));
+      push(b + "ない");
+      push(b);
+    }
+  }
+
+  // 〜ぬ → ない, literary negative (行かぬ→行く; 食べぬ→食べる; せぬ→する).
+  // Skipped for single-kana stems so dictionary forms like 死ぬ are untouched.
+  {
+    const b = tryEnd("ぬ");
+    if (b === "せ") push("する");
+    else if (b === "来" || b === "こ") push("来る");
+    else if (b !== undefined && b.length >= 2) {
+      push(stemToDict(b));
+      push(b + "ない");
+      push(b);
+    }
+  }
+
+  // 〜なければならない family: なきゃ/なくちゃ/ないと → ない
+  // (行かなきゃ→行く; 飲まなくちゃ→飲む; 食べないと→食べる)
+  for (const suf of ["なくちゃ", "なきゃ"]) {
+    const b = tryEnd(suf);
+    if (b === undefined) continue;
+    push(stemToDict(b));
+    push(b + "ない");
+    push(b);
+  }
+  {
+    const b = tryEnd("ないと");
+    if (b !== undefined) {
+      // Strip the ない down to the a-stem: 食べないと → 食べ.
+      const stem = b.endsWith("な") ? b.slice(0, -1) : b;
+      push(stemToDict(stem));
+      push(stem + "ない");
+      push(stem);
+    }
+  }
+
+  // 〜なければ → ない (行かなければ→行く)
+  {
+    const b = tryEnd("なければ");
+    if (b !== undefined) {
+      push(stemToDict(b));
+      push(b + "ない");
+      push(b);
+    }
+  }
+
   // Te-form: て/で (食べて→食べる; 読んで→読む)
   if (s.endsWith("て") && s.length > 2) {
     const base = s.slice(0, -1);
@@ -227,17 +391,104 @@ export function deinflectJapanese(surface: string): Deinflection {
     push(base + "ぬ");
   }
 
+  // Imperative: godan e-stem (書け→書く), ichidan 〜ろ (食べろ→食べる),
+  // する→しろ, 来る→来い. Placed after the te-form rules so te-forms keep
+  // their existing readings.
+  if (s.length >= 2) {
+    const lc = s.charAt(s.length - 1);
+    const prev = s.charAt(s.length - 2);
+    if (s === "来い" || s === "こい") {
+      push("来る");
+    } else if (s === "しろ") {
+      push("する");
+    } else if (E_ROW_MAP[lc] && isKanji(prev)) {
+      push(s.slice(0, -1) + E_ROW_MAP[lc]);
+    } else if (
+      lc === "ろ" &&
+      (isKanji(prev) || E_ROW_KANA.includes(prev) || I_ROW_KANA.includes(prev) || prev === "し")
+    ) {
+      push(s.slice(0, -1) + "る");
+    }
+  }
+
   // Potential / passive: られる/れる/える
   if (s.endsWith("られる")) push(s.slice(0, -3));
   if (s.endsWith("れる") && s.length > 3) push(s.slice(0, -2));
   if (s.endsWith("える") && s.length > 3) push(s.slice(0, -2));
 
+  // Causative: させる/せる (書かせる→書く; 食べさせる→食べる; 食べせる→食べる)
+  {
+    const b = tryEnd("させる");
+    if (b !== undefined) {
+      if (b.endsWith("さ")) push(b.slice(0, -1) + "する"); // 心配させる (causative of する)
+      else push(stemToDict(b));
+      push(b);
+    }
+    const c = tryEnd("せる");
+    // させる handled above; single-kana stems (きせる) are left alone.
+    if (c !== undefined && !s.endsWith("させる") && c.length >= 2) {
+      push(stemToDict(c));
+      push(c);
+    }
+  }
+
+  // Godan potential: e-stem + る (書ける→書く; 読める→読む; 来れる→来る).
+  // Ambiguous with ichidan dictionary forms (食べる); this is a best guess,
+  // placed after the られる/れる/える rules so those keep priority.
+  if (
+    s.endsWith("る") &&
+    s.length > 2 &&
+    !s.endsWith("られる") &&
+    !s.endsWith("れる") &&
+    !s.endsWith("える")
+  ) {
+    const b = s.slice(0, -1);
+    if (b === "され") push("する");
+    else {
+      const lc = b.charAt(b.length - 1);
+      if (E_ROW_MAP[lc]) push(b.slice(0, -1) + E_ROW_MAP[lc]);
+    }
+  }
+
   // Desire: たい/たかった
   if (s.endsWith("たかった")) push(s.slice(0, -4));
   if (s.endsWith("たい") && s.length > 3) push(s.slice(0, -2));
 
+  // ば-conditional: ければ (adjectival), れば / e-stem+ば (verbal)
+  // (高ければ→高い; 食べれば→食べる; 行けば→行く; すれば→する; 来れば→来る)
+  if (s.endsWith("ければ") && s.length > 3) {
+    const base = s.slice(0, -3);
+    push(base + "い");
+    push(base);
+  }
+  {
+    const b = tryEnd("れば");
+    if (b !== undefined) push(stemToDict(b) ?? b + "る");
+  }
+  if (s.endsWith("ば") && s.length > 2) {
+    const b = s.slice(0, -1);
+    const lc = b.charAt(b.length - 1);
+    if (E_ROW_MAP[lc]) push(b.slice(0, -1) + E_ROW_MAP[lc]);
+  }
+
   // Volitional: よう
   if (s.endsWith("よう") && s.length > 3) push(s.slice(0, -3));
+
+  // Godan volitional う: 書こう→書く; 買おう→買う.
+  // The kana before the o-row stem must be kanji so だろう etc. are skipped.
+  if (s.endsWith("う") && s.length > 2) {
+    const b = s.slice(0, -1);
+    if (b === "しよ") {
+      push("する");
+    } else {
+      const lc = b.charAt(b.length - 1);
+      const prev = b.charAt(b.length - 2);
+      if (O_ROW_MAP[lc] && isKanji(prev)) {
+        push(b.slice(0, -1) + O_ROW_MAP[lc]);
+        push(b);
+      }
+    }
+  }
 
   // Adjectival: かった (楽しかった→楽しい), くない, そう
   if (s.endsWith("かった") && s.length > 4) {
