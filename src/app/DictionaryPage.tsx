@@ -8,6 +8,8 @@ import { packKey } from "../core/dictionary/downloadManager";
 import type { IndexState } from "../core/dictionary/persistentStore";
 import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { EntryCard } from "../reader/EntryCard";
+import { recordLookup } from "../study/history";
+import { saveWord, isWordSaved } from "../study/wordBank";
 
 export interface DictionaryPageProps {
   onBack: () => void;
@@ -114,6 +116,20 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selected, setSelected] = useState<{ surface: string; entry?: DictionaryEntry } | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
+  // Bumps to re-render the "+ Bank" saved state.
+  const [, setBankTick] = useState(0);
+
+  const saveSelectedWord = useCallback(() => {
+    if (!selected) return;
+    saveWord({
+      word: selected.surface,
+      reading: selected.entry?.readings?.[0],
+      definition: selected.entry?.definition,
+      pos: selected.entry?.pos,
+      lang: language,
+    });
+    setBankTick((t) => t + 1);
+  }, [selected, language]);
 
   // Word list state (when a card is opened)
   const [activeCard, setActiveCard] = useState<CardData | null>(null);
@@ -248,6 +264,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
       setLanguage(lang);
       setSelected({ surface: word, entry });
       setHistory(pushHistory({ language: lang, word, at: Date.now() }));
+      recordLookup(word, lang);
     })();
   }, []);
 
@@ -262,6 +279,7 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
         const entry = await store.lookup(word);
         setSelected({ surface: reading ?? word, entry });
         setHistory(pushHistory({ language, word, at: Date.now() }));
+        recordLookup(word, language);
       })();
     },
     [language],
@@ -351,7 +369,12 @@ export function DictionaryPage({ onBack, initial }: DictionaryPageProps) {
           /* Entry detail view */
           <div>
             <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-              <EntryCard word={selected.surface} entry={selected.entry} />
+              <EntryCard
+                word={selected.surface}
+                entry={selected.entry}
+                wordSaved={isWordSaved(selected.surface, language)}
+                onSaveWord={saveSelectedWord}
+              />
             </div>
           </div>
         ) : query.trim() ? (

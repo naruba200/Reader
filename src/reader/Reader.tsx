@@ -17,11 +17,29 @@ import { ChapterView } from "./ChapterView";
 import { WordPopover, type PopoverState } from "./WordPopover";
 import { paginateChapter } from "./pages";
 import { Toast } from "../components/Toast";
+import { ReadingSettingsPanel } from "./ReadingSettingsPanel";
+import {
+  loadReadingSettings,
+  saveReadingSettings,
+  loadBrightness,
+  saveBrightness,
+  loadWakeLock,
+  saveWakeLock,
+  TYPEFACE_STACKS,
+  type ReadingSettings,
+} from "./readingSettings";
+import { tapTick } from "../core/util/haptics";
+import { recordLookup } from "../study/history";
+import { saveWord, isWordSaved } from "../study/wordBank";
+import { addReadingTime } from "../study/stats";
+import { sentenceAround, kataToHira } from "./furigana";
 import {
   getActiveEngine,
   getActiveVoiceId,
   setActiveEngine,
   setActiveVoice,
+  getActiveRate,
+  setActiveRate,
   getAllEngines,
   getAllVoices,
   type TTSEngine,
@@ -38,18 +56,6 @@ export interface ReaderProps {
   initialPageIndex?: number;
   onProgress?: (chapterIndex: number, pageIndex: number) => void;
   onRegisterCloseHandler?: (close: (() => void) | null) => void;
-}
-
-const FONT_SIZE_KEY = "smart-reader-font-size";
-const FONT_SIZE_MIN = 13;
-const FONT_SIZE_MAX = 32;
-
-function loadFontSize(): number {
-  try {
-    const value = Number(localStorage.getItem(FONT_SIZE_KEY));
-    if (value >= FONT_SIZE_MIN && value <= FONT_SIZE_MAX) return value;
-  } catch { /* ignore */ }
-  return 17;
 }
 
 export type HighlightMode = "all" | "hard" | "unknown" | "off";
@@ -92,24 +98,25 @@ const LEVEL_CLASS: Partial<Record<Level, string>> = {
   FREQ_RARE: "underline decoration-indigo-600 decoration-2 underline-offset-2 decoration-dotted",
 };
 
-type ReadingFilter = "none" | "sepia" | "warm" | "dark-warm";
+type ReadingFilter = "none" | "sepia" | "warm" | "dark-warm" | "amoled";
 
 const FILTER_KEY = "smart-reader-reading-filter";
 
 function loadReadingFilter(): ReadingFilter {
   try {
     const v = localStorage.getItem(FILTER_KEY);
-    if (v === "sepia" || v === "warm" || v === "dark-warm") return v;
+    if (v === "sepia" || v === "warm" || v === "dark-warm" || v === "amoled") return v;
   } catch { /* ignore */ }
   return "none";
 }
 
-const FILTER_CYCLE: ReadingFilter[] = ["none", "sepia", "warm", "dark-warm"];
+const FILTER_CYCLE: ReadingFilter[] = ["none", "sepia", "warm", "dark-warm", "amoled"];
 const FILTER_LABEL: Record<ReadingFilter, string> = {
   none: "No filter",
   sepia: "Sepia",
   warm: "Warm",
   "dark-warm": "Dark warm",
+  amoled: "AMOLED black",
 };
 
 type NavigationMode = "tap" | "swipe" | "both";
@@ -151,7 +158,42 @@ export function Reader({
   const [readingMode, setReadingMode] = useState<"horizontal" | "vertical">(() =>
     book.language === "ja" ? "vertical" : "horizontal",
   );
-  const [fontSize, setFontSize] = useState<number>(loadFontSize);
+  // Per-book reading comfort settings (font, typeface, line height, margins)
+  const [readingSettings, setReadingSettings] = useState<ReadingSettings>(() =>
+    loadReadingSettings(book.id),
+  );
+  const changeReadingSettings = useCallback(
+    (partial: Partial<ReadingSettings>) => {
+      setReadingSettings(saveReadingSettings(book.id, partial));
+    },
+    [book.id],
+  );
+
+  // Device-level prefs
+  const [brightness, setBrightnessState] = useState<number>(loadBrightness);
+  const changeBrightness = useCallback((v: number) => {
+    setBrightnessState(v);
+    saveBrightness(v);
+  }, []);
+  const [wakeLockOn, setWakeLockOn] = useState<boolean>(loadWakeLock);
+  const changeWakeLock = useCallback((on: boolean) => {
+    setWakeLockOn(on);
+    saveWakeLock(on);
+  }, []);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+
+  // Furigana readings above kanji (Japanese books only)
+  const [furigana, setFurigana] = useState<boolean>(() => {
+    try { return localStorage.getItem("smart-reader-furigana") === "1"; } catch { return false; }
+  });
+  const toggleFurigana = useCallback(() => {
+    setFurigana((v) => {
+      const next = !v;
+      try { localStorage.setItem("smart-reader-furigana", next ? "1" : "0"); } catch { /* ignore */ }
+      setToast(next ? "Furigana on" : "Furigana off");
+      return next;
+    });
+  }, []);
   const [levelDb, setLevelDb] = useState<LevelDb | null>(null);
   const [highlightMode, setHighlightMode] = useState<HighlightMode>(loadHighlightMode);
   const [readingFilter, setReadingFilter] = useState<ReadingFilter>(loadReadingFilter);
@@ -160,7 +202,6 @@ export function Reader({
   // UI state
   const [controlsVisible, setControlsVisible] = useState(false);
   const [showChapterSelect, setShowChapterSelect] = useState(false);
-  const [showFontSizeBar, setShowFontSizeBar] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -171,6 +212,16 @@ export function Reader({
   const [showVoiceSelector, setShowVoiceSelector] = useState(false);
   const [ttsVoices, setTtsVoices] = useState<TTSVoice[]>([]);
   const [ttsEngineId, setTtsEngineId] = useState<string>(() => getActiveEngine().id);
+  // Speech rate: per-book memory, falling back to the global saved rate.
+  const [ttsRate, setTtsRate] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem(`smart-reader-tts-rate-${book.id}`));
+      if (v >= 0.5 && v <= 2) return v;
+    } catch { /* ignore */ }
+    return getActiveRate();
+  });
+  // Sleep timer in minutes (0 = off).
+  const [sleepMinutes, setSleepMinutes] = useState(0);
   const sentencesRef = useRef<string[]>([]);
   // Mobile long-press (the voice selector used to be desktop right-click only)
   const longPressTimer = useRef<number | null>(null);
@@ -212,10 +263,7 @@ export function Reader({
 
   // Controls visibility management
   const toggleControls = useCallback(() => {
-    setControlsVisible((v) => {
-      if (v) setShowFontSizeBar(false);
-      return !v;
-    });
+    setControlsVisible((v) => !v);
   }, []);
 
   const changeHighlightMode = useCallback((mode: HighlightMode) => {
@@ -223,14 +271,6 @@ export function Reader({
     try { localStorage.setItem(HIGHLIGHT_KEY, mode); } catch { /* ignore */ }
     const labels: Record<HighlightMode, string> = { all: "All", hard: "Hard", unknown: "Unknown", off: "Off" };
     setToast(`Highlight: ${labels[mode]}`);
-  }, []);
-
-  const changeFontSize = useCallback((delta: number) => {
-    setFontSize((prev) => {
-      const next = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, prev + delta));
-      try { localStorage.setItem(FONT_SIZE_KEY, String(next)); } catch { /* ignore */ }
-      return next;
-    });
   }, []);
 
   const changeReadingFilter = useCallback(() => {
@@ -270,6 +310,27 @@ export function Reader({
   const chapter = book.chapters[chapterIndex] ?? book.chapters[0];
   const pages = useMemo(() => paginateChapter(chapter), [chapter]);
   const page = pages[Math.min(pageIndex, pages.length - 1)];
+
+  // Save the popover's word to the word bank with sentence context.
+  const savePopoverWord = useCallback(() => {
+    if (!popover) return;
+    const token = popover.token;
+    const word = token.lemma?.trim() || token.surface;
+    saveWord({
+      word,
+      reading: entry?.readings?.[0] ?? (token.reading ? kataToHira(token.reading) : undefined),
+      definition: entry?.definition,
+      pos: entry?.pos,
+      sentence: sentenceAround(chapter.text, token.start),
+      bookTitle: book.title,
+      lang: book.language,
+    });
+    setToast("Saved to word bank");
+  }, [popover, entry, chapter.text, book.title, book.language]);
+
+  const popoverWordSaved = popover
+    ? isWordSaved(popover.token.lemma?.trim() || popover.token.surface, book.language)
+    : false;
 
   // Report reading position changes
   useEffect(() => {
@@ -319,6 +380,8 @@ export function Reader({
 
   const handleWordClick = useCallback(
     (token: AnalyzedToken, pos: { x: number; y: number }) => {
+      tapTick();
+      recordLookup(token.lemma?.trim() || token.surface, book.language);
       setPopover({ token, x: pos.x, y: pos.y });
       setEntry(undefined);
       const dict = getDictionaryStore(book.language);
@@ -339,6 +402,7 @@ export function Reader({
   // Page navigation with animation
   const goPrev = useCallback(() => {
     if (isAnimating) return;
+    tapTick();
     if (pageIndex > 0) {
       setIsAnimating(true);
       setTimeout(() => {
@@ -358,6 +422,7 @@ export function Reader({
 
   const goNext = useCallback(() => {
     if (isAnimating) return;
+    tapTick();
     if (pageIndex < pages.length - 1) {
       setIsAnimating(true);
       setTimeout(() => {
@@ -427,6 +492,93 @@ export function Reader({
     reloadTtsVoices(ttsEngineId);
   }, [book.language, ttsEngineId, showVoiceSelector, reloadTtsVoices]);
 
+  // Keep-awake via the Wake Lock API while reading (re-request on visibility change).
+  useEffect(() => {
+    if (!wakeLockOn) return;
+    let lock: { release: () => Promise<void> } | null = null;
+    let cancelled = false;
+    const request = async () => {
+      try {
+        const nav = navigator as Navigator & {
+          wakeLock?: { request: (type: string) => Promise<{ release: () => Promise<void> }> };
+        };
+        if (!nav.wakeLock) return;
+        if (document.visibilityState !== "visible") return;
+        lock = await nav.wakeLock.request("screen");
+        if (cancelled) {
+          void lock.release().catch(() => {});
+          lock = null;
+        }
+      } catch (err) {
+        console.warn("Wake lock request failed", err);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && !lock) void request();
+    };
+    void request();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (lock) void lock.release().catch(() => {});
+    };
+  }, [wakeLockOn]);
+
+  // Sleep timer: stop read-aloud after N minutes.
+  useEffect(() => {
+    if (!ttsPlaying || sleepMinutes <= 0) return;
+    const t = window.setTimeout(() => {
+      getActiveEngine().stop();
+      setTtsPlaying(false);
+      setTtsPaused(false);
+      setTtsSentenceIndex(-1);
+      setSleepMinutes(0);
+      setToast("Sleep timer ended");
+    }, sleepMinutes * 60_000);
+    return () => window.clearTimeout(t);
+  }, [ttsPlaying, sleepMinutes]);
+
+  // Reading-time stats: bank visible reading time every 30s and on close.
+  useEffect(() => {
+    let accMs = 0;
+    let last = Date.now();
+    const note = () => {
+      const now = Date.now();
+      if (document.visibilityState === "visible") accMs += now - last;
+      last = now;
+    };
+    const flush = () => {
+      if (accMs >= 60_000) {
+        addReadingTime(book.id, accMs);
+        accMs = 0;
+      }
+    };
+    const iv = window.setInterval(() => { note(); flush(); }, 30_000);
+    document.addEventListener("visibilitychange", note);
+    return () => {
+      window.clearInterval(iv);
+      document.removeEventListener("visibilitychange", note);
+      note();
+      if (accMs > 10_000) addReadingTime(book.id, accMs);
+    };
+  }, [book.id]);
+
+  // MediaSession: lock-screen / notification metadata while reading aloud.
+  useEffect(() => {
+    try {
+      const ms = navigator.mediaSession;
+      if (!ms) return;
+      ms.metadata = ttsPlaying
+        ? new MediaMetadata({
+            title: chapter.title || book.title,
+            artist: book.author ?? "Smart Reader",
+            album: book.title,
+          })
+        : null;
+    } catch { /* ignore */ }
+  }, [ttsPlaying, chapter.title, book.title, book.author]);
+
   // TTS - sentence-level sequential speaking.
   // Tries the active engine first, then falls back to any other available
   // engine once. If every engine fails, the user gets a toast instead of
@@ -454,7 +606,7 @@ export function Reader({
         ? (getActiveVoiceId() ?? ttsVoices.find((v) => v.engine === engine.id)?.id)
         : ttsVoices.find((v) => v.engine === engine.id)?.id;
       try {
-        await engine.speak(text, voiceId);
+        await engine.speak(text, voiceId, ttsRate);
         spoken = true;
         break;
       } catch (err) {
@@ -470,7 +622,14 @@ export function Reader({
     }
     // Continue to next sentence
     return speakSentence(sentences, index + 1);
-  }, [book.language, ttsVoices]);
+  }, [ttsRate, ttsVoices]);
+
+  const changeTtsRate = useCallback((rate: number) => {
+    const clamped = Math.min(2, Math.max(0.5, Math.round(rate * 10) / 10));
+    setTtsRate(clamped);
+    setActiveRate(clamped);
+    try { localStorage.setItem(`smart-reader-tts-rate-${book.id}`, String(clamped)); } catch { /* ignore */ }
+  }, [book.id]);
 
   const startTTS = useCallback(() => {
     const text = chapter.text;
@@ -503,12 +662,36 @@ export function Reader({
     setTtsSentenceIndex(-1);
   }, []);
 
+  // MediaSession action handlers: headset buttons, lock screen, notification.
+  useEffect(() => {
+    let ms: MediaSession | null = null;
+    try {
+      ms = navigator.mediaSession ?? null;
+      if (!ms || typeof ms.setActionHandler !== "function") return;
+      ms.setActionHandler("play", () => { if (ttsPaused) resumeTTS(); });
+      ms.setActionHandler("pause", () => { if (ttsPlaying && !ttsPaused) pauseTTS(); });
+      ms.setActionHandler("previoustrack", () => { goPrev(); });
+      ms.setActionHandler("nexttrack", () => { goNext(); });
+    } catch { /* ignore */ }
+    return () => {
+      try {
+        ms?.setActionHandler("play", null);
+        ms?.setActionHandler("pause", null);
+        ms?.setActionHandler("previoustrack", null);
+        ms?.setActionHandler("nexttrack", null);
+      } catch { /* ignore */ }
+    };
+  }, [ttsPlaying, ttsPaused, pauseTTS, resumeTTS, goPrev, goNext]);
+
+
+  const isAmoled = readingFilter === "amoled";
 
   const filterClass = readingFilter === "sepia" ? "filter-sepia" :
     readingFilter === "warm" ? "filter-warm" :
     readingFilter === "dark-warm" ? "filter-dark-warm" : "";
 
   const chromeClass =
+    isAmoled ? "bg-black" :
     readingFilter === "sepia" ? "bg-[rgb(245,241,232)] dark:bg-[rgb(30,25,20)]" :
     readingFilter === "warm" ? "bg-[rgb(255,249,235)] dark:bg-[rgb(35,30,22)]" :
     readingFilter === "dark-warm" ? "bg-[rgb(240,235,225)] dark:bg-[rgb(25,22,18)]" : "bg-white dark:bg-gray-900";
@@ -516,7 +699,14 @@ export function Reader({
   const isVertical = readingMode === "vertical";
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden">
+    <div className={`relative flex h-full flex-col overflow-hidden ${isAmoled ? "dark" : ""}`}>
+      {/* In-app brightness dim overlay (below sheets/popovers) */}
+      {brightness < 1 && (
+        <div
+          className="pointer-events-none absolute inset-0 z-[70] bg-black"
+          style={{ opacity: 1 - brightness }}
+        />
+      )}
       {/* Page counter (hidden when controls are visible) */}
       {!controlsVisible && (
       <div className={`absolute top-0 left-0 right-0 z-30 flex items-center justify-center py-0.5 text-xs text-gray-500 ${chromeClass}`}>
@@ -594,7 +784,8 @@ export function Reader({
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         onClick={handleContentClick}
-        className={`flex-1 ${isVertical ? "overflow-x-auto overflow-y-hidden touch-auto" : "overflow-y-auto touch-pan-y"} ${filterClass} pt-1`}
+        className={`flex-1 ${isVertical ? "overflow-x-auto overflow-y-hidden touch-auto" : "overflow-y-auto touch-pan-y"} ${filterClass} ${isAmoled ? "bg-black" : ""} pt-1`}
+        style={{ fontFamily: TYPEFACE_STACKS[readingSettings.typeface] }}
       >
         {busy ? (
           <div className="flex h-full items-center justify-center text-gray-400">
@@ -609,35 +800,15 @@ export function Reader({
             onWordClick={handleWordClick}
             page={page}
             vertical={isVertical}
-            fontSize={fontSize}
+            fontSize={readingSettings.fontSize}
+            lineHeight={readingSettings.lineHeight}
+            contentPaddingX={readingSettings.marginX}
+            furigana={furigana && book.language === "ja"}
             ttsSentenceIndex={ttsSentenceIndex}
             ttsSentences={ttsPlaying ? sentencesRef.current : []}
           />
         )}
       </div>
-
-      {/* Font size secondary bar */}
-      {showFontSizeBar && (
-        <div className={`absolute bottom-14 left-0 right-0 z-40 flex items-center justify-center gap-2 border-t border-gray-200 px-4 py-2 ${chromeClass}`}>
-          <button
-            type="button"
-            onClick={() => changeFontSize(-1)}
-            disabled={fontSize <= FONT_SIZE_MIN}
-            className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium disabled:opacity-40 dark:border-gray-600 dark:bg-gray-800"
-          >
-            A−
-          </button>
-          <span className="text-sm tabular-nums text-gray-600 dark:text-gray-300">{fontSize}px</span>
-          <button
-            type="button"
-            onClick={() => changeFontSize(1)}
-            disabled={fontSize >= FONT_SIZE_MAX}
-            className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium disabled:opacity-40 dark:border-gray-600 dark:bg-gray-800"
-          >
-            A+
-          </button>
-        </div>
-      )}
 
       {/* Footer icon bar */}
       <div
@@ -696,15 +867,27 @@ export function Reader({
             <span className="text-base font-bold">{isVertical ? "縦" : "横"}</span>
           </button>
 
-          {/* Font size */}
+          {/* Reading settings */}
           <button
             type="button"
-            onClick={() => setShowFontSizeBar((v) => !v)}
-            className={`reader-icon-btn ${showFontSizeBar ? "active" : ""}`}
-            title="Font size"
+            onClick={() => setShowSettingsPanel(true)}
+            className="reader-icon-btn"
+            title="Reading settings"
           >
             <span className="text-sm font-bold">A</span>
           </button>
+
+          {/* Furigana (Japanese only) */}
+          {book.language === "ja" && (
+            <button
+              type="button"
+              onClick={toggleFurigana}
+              className={`reader-icon-btn ${furigana ? "active" : ""}`}
+              title="Furigana"
+            >
+              <span className="text-sm font-bold">あ</span>
+            </button>
+          )}
 
           {/* TTS */}
           <div className="relative">
@@ -762,6 +945,37 @@ export function Reader({
                     </button>
                   ))}
                 </div>
+                <div className="mb-1 flex items-baseline justify-between">
+                  <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Speed</span>
+                  <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{ttsRate.toFixed(1)}×</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={2}
+                  step={0.1}
+                  value={ttsRate}
+                  onChange={(e) => changeTtsRate(Number(e.target.value))}
+                  className="mb-2 w-full accent-blue-600"
+                  aria-label="Speech speed"
+                />
+                <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Sleep timer</div>
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {[0, 5, 10, 15, 30, 60].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setSleepMinutes(m)}
+                      className={`rounded px-2 py-1 text-xs font-medium ${
+                        sleepMinutes === m
+                          ? "bg-blue-500 text-white"
+                          : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                      }`}
+                    >
+                      {m === 0 ? "Off" : `${m}m`}
+                    </button>
+                  ))}
+                </div>
                 <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Voice</div>
                 <div className="max-h-40 overflow-y-auto custom-scrollbar">
                   {ttsVoices.length === 0 ? (
@@ -790,6 +1004,14 @@ export function Reader({
                   Close
                 </button>
               </div>
+            )}
+            {sleepMinutes > 0 && ttsPlaying && (
+              <span
+                className="absolute -right-1 -top-1 rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-4 text-white"
+                title={`Sleep timer: ${sleepMinutes} min`}
+              >
+                {sleepMinutes}
+              </span>
             )}
           </div>
           {ttsPlaying && (
@@ -880,6 +1102,8 @@ export function Reader({
           popover={popover}
           entry={entry}
           onClose={() => setPopover(null)}
+          wordSaved={popoverWordSaved}
+          onSaveWord={savePopoverWord}
           onOpenInDictionary={
             onOpenDictionary
               ? (lemma) => {
@@ -890,6 +1114,18 @@ export function Reader({
           }
         />
       )}
+
+      {/* Reading settings bottom sheet */}
+      <ReadingSettingsPanel
+        open={showSettingsPanel}
+        onClose={() => setShowSettingsPanel(false)}
+        settings={readingSettings}
+        onChange={changeReadingSettings}
+        brightness={brightness}
+        onBrightnessChange={changeBrightness}
+        wakeLock={wakeLockOn}
+        onWakeLockChange={changeWakeLock}
+      />
 
       {/* Toast notification */}
       {toast && <Toast message={toast} onDone={() => setToast(null)} />}

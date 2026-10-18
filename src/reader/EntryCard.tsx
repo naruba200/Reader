@@ -8,6 +8,9 @@ export interface EntryCardProps {
   level?: Level;
   onClose?: () => void;
   onOpenInDictionary?: () => void;
+  /** Save-to-word-bank handler; when provided a "+ Bank" button is shown. */
+  onSaveWord?: () => void;
+  wordSaved?: boolean;
 }
 
 const LEVEL_BADGE: Partial<Record<Level, string>> = {
@@ -36,6 +39,8 @@ export function EntryCard({
   level,
   onClose,
   onOpenInDictionary,
+  onSaveWord,
+  wordSaved,
 }: EntryCardProps) {
   const [played, setPlayed] = useState(false);
   const [readingDef, setReadingDef] = useState(false);
@@ -99,6 +104,20 @@ export function EntryCard({
           >
             {played ? "🔊" : "🔈"}
           </button>
+          {onSaveWord && (
+            <button
+              type="button"
+              onClick={onSaveWord}
+              className={`rounded border px-2 py-1 text-xs font-medium ${
+                wordSaved
+                  ? "border-green-400 bg-green-50 text-green-700 dark:border-green-600 dark:bg-green-900/40 dark:text-green-300"
+                  : "border-gray-300 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+              }`}
+              aria-label={wordSaved ? "Saved to word bank" : "Save to word bank"}
+            >
+              {wordSaved ? "✓ Bank" : "+ Bank"}
+            </button>
+          )}
           {entry?.definition && (
             <button
               type="button"

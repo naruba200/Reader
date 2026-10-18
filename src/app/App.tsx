@@ -4,18 +4,22 @@ import { App as CapApp } from "@capacitor/app";
 import type { BookDocument, LanguageCode } from "../core/types";
 import { parserForFileName } from "../core/books";
 import { Reader } from "../reader/Reader";
-import { useTheme } from "./ThemeContext";
 import { DictionaryPage } from "./DictionaryPage";
 import { DownloadsPage } from "./DownloadsPage";
 import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { getKuromojiTokenizer } from "../core/language";
+import { ActionSheet } from "../components/ActionSheet";
+import { SettingsPage } from "./SettingsPage";
+import { BookSheet } from "./BookSheet";
+import { StudyPage } from "../study/StudyPage";
 import {
   getLibraryStore,
+  type ReadingStatus,
   type StoredBookMeta,
   type StoredProgress,
 } from "../core/library";
 
-type View = "library" | "reader" | "dictionary" | "downloads";
+type View = "library" | "reader" | "dictionary" | "downloads" | "settings" | "study";
 type LibraryViewMode = "grid" | "list";
 type LibrarySort = "recent" | "title" | "added" | "language";
 
@@ -54,8 +58,97 @@ interface ActiveBook {
   progress?: StoredProgress;
 }
 
+type TabId = "library" | "dictionary" | "study" | "downloads" | "settings";
+
+function TabIcon({ id }: { id: TabId }) {
+  const cls = "h-6 w-6";
+  switch (id) {
+    case "library":
+      return (
+        <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+        </svg>
+      );
+    case "dictionary":
+      return (
+        <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z" />
+        </svg>
+      );
+    case "study":
+      return (
+        <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path strokeLinecap="round" d="M3 9h18" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 13h4" />
+        </svg>
+      );
+    case "downloads":
+      return (
+        <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M7 10l5 5 5-5" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 15V3" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M1 14h6M9 8h6M17 16h6" />
+        </svg>
+      );
+  }
+}
+
+function BottomNav({
+  view,
+  downloadsActive,
+  onNavigate,
+}: {
+  view: View;
+  downloadsActive: boolean;
+  onNavigate: (tab: TabId) => void;
+}) {
+  const tabs: { id: TabId; label: string }[] = [
+    { id: "library", label: "Library" },
+    { id: "dictionary", label: "Dictionary" },
+    { id: "study", label: "Study" },
+    { id: "downloads", label: "Downloads" },
+    { id: "settings", label: "Settings" },
+  ];
+  return (
+    <nav className="border-t border-gray-200 bg-white pb-safe dark:border-gray-700 dark:bg-gray-800">
+      <div className="grid grid-cols-5">
+        {tabs.map((t) => {
+          const isActive = view === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onNavigate(t.id)}
+              className={`relative flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium ${
+                isActive
+                  ? "text-blue-600 dark:text-blue-400"
+                  : "text-gray-500 dark:text-gray-400"
+              }`}
+            >
+              <TabIcon id={t.id} />
+              {t.label}
+              {t.id === "downloads" && downloadsActive && (
+                <span className="absolute right-1/2 top-1.5 h-2 w-2 translate-x-4 rounded-full bg-blue-500" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
 export function App() {
-  const { theme, toggleTheme } = useTheme();
   const [books, setBooks] = useState<StoredBookMeta[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [active, setActive] = useState<ActiveBook | null>(null);
@@ -68,6 +161,28 @@ export function App() {
     received: number;
     total?: number;
   }>({ count: 0, received: 0 });
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | ReadingStatus>("all");
+  const [sheetBook, setSheetBook] = useState<StoredBookMeta | null>(null);
+
+  // Long-press on a book card opens its details sheet.
+  const lpTimer = useRef<number | null>(null);
+  const lpFired = useRef(false);
+  const startBookLongPress = useCallback((book: StoredBookMeta) => {
+    lpFired.current = false;
+    if (lpTimer.current) window.clearTimeout(lpTimer.current);
+    lpTimer.current = window.setTimeout(() => {
+      lpFired.current = true;
+      lpTimer.current = null;
+      setSheetBook(book);
+    }, 550);
+  }, []);
+  const cancelBookLongPress = useCallback(() => {
+    if (lpTimer.current) {
+      window.clearTimeout(lpTimer.current);
+      lpTimer.current = null;
+    }
+  }, []);
 
   // Library view state
   const [viewMode, setViewMode] = useState<LibraryViewMode>(() => {
@@ -117,6 +232,8 @@ export function App() {
       if (viewRef.current === "reader") { setActive(null); setView("library"); }
       else if (viewRef.current === "dictionary") { setView(activeRef.current ? "reader" : "library"); }
       else if (viewRef.current === "downloads") { setView("library"); }
+      else if (viewRef.current === "settings") { setView("library"); }
+      else if (viewRef.current === "study") { setView("library"); }
       else { void CapApp.exitApp(); }
     }).then((handle) => { remove = handle.remove; });
     return () => { remove?.(); };
@@ -183,6 +300,17 @@ export function App() {
       const progress = await getLibraryStore().loadProgress(meta.id);
       setActive({ id: meta.id, doc, progress });
       setView("reader");
+      // Auto-shelf: opening a book marks it as "reading" unless finished.
+      if (meta.status !== "finished" && meta.status !== "reading") {
+        const updated = await getLibraryStore().updateMeta(meta.id, { status: "reading" });
+        if (updated) {
+          setBooks((prev) => {
+            const next = prev.map((b) => (b.id === updated.id ? updated : b));
+            saveBookCache(next);
+            return next;
+          });
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -205,9 +333,14 @@ export function App() {
     setView("dictionary");
   };
 
-  const deleteBook = async (e: React.MouseEvent, id: string) => {
+  const requestDeleteBook = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (!confirm("Delete this book?")) return;
+    setPendingDeleteId(id);
+  };
+
+  const confirmDeleteBook = async () => {
+    const id = pendingDeleteId;
+    if (!id) return;
     try {
       await getLibraryStore().deleteBook(id);
       setBooks((prev) => {
@@ -240,45 +373,25 @@ export function App() {
     return sorted;
   }, [books, sortBy]);
 
+  const visibleBooks = useMemo(
+    () => (statusFilter === "all" ? sortedBooks : sortedBooks.filter((b) => b.status === statusFilter)),
+    [sortedBooks, statusFilter],
+  );
+
+  const STATUS_FILTERS: { id: "all" | ReadingStatus; label: string }[] = [
+    { id: "all", label: "All" },
+    { id: "want", label: "Want to read" },
+    { id: "reading", label: "Reading" },
+    { id: "finished", label: "Finished" },
+  ];
+
   return (
     <div className="flex h-full flex-col bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
-      {view !== "reader" && (
-      <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
-        <button
-          type="button"
-          onClick={() => { setView("library"); setActive(null); }}
-          className="text-lg font-bold hover:text-gray-600 dark:hover:text-gray-300"
-        >
-          Smart Reader
-        </button>
+      {view === "library" && (
+      <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 pt-safe dark:border-gray-700">
+        <span className="text-lg font-bold">Smart Reader</span>
         <span className="text-xs text-gray-500 dark:text-gray-400">Alpha</span>
-        <button
-          type="button"
-          onClick={() => openDictionary("ja")}
-          className="ml-auto rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
-        >
-          Dictionary
-        </button>
-        <button
-          type="button"
-          onClick={() => setView("downloads")}
-          className={`rounded border px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700 ${
-            activeDownloads.count > 0
-              ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40 dark:text-blue-200 dark:hover:bg-blue-900/60"
-              : "border-gray-300 dark:border-gray-600"
-          }`}
-          title="Manage dictionary packs"
-        >
-          {activeDownloads.count > 0 ? (
-            <span className="flex items-center gap-1.5">
-              <span className="animate-pulse">↓</span>
-              Downloads
-            </span>
-          ) : (
-            "Downloads"
-          )}
-        </button>
-        <label className="cursor-pointer rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700">
+        <label className="ml-auto cursor-pointer rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white active:scale-[0.98]">
           Import…
           <input
             type="file"
@@ -287,14 +400,6 @@ export function App() {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ""; }}
           />
         </label>
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
-          aria-label="Toggle theme"
-        >
-          {theme === "dark" ? "☀️" : "🌙"}
-        </button>
       </header>
       )}
 
@@ -334,6 +439,17 @@ export function App() {
             onOpenWord={(lang, word) => { openDictionary(lang, word); }}
           />
         </div>
+      ) : view === "settings" ? (
+        <div className="min-h-0 flex-1">
+          <SettingsPage
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+          />
+        </div>
+      ) : view === "study" ? (
+        <div className="min-h-0 flex-1">
+          <StudyPage />
+        </div>
       ) : (
         <main className="min-h-0 flex-1 overflow-y-auto p-4">
           {!hydrated ? (
@@ -348,9 +464,25 @@ export function App() {
           ) : (
             <>
               {/* Library toolbar */}
+              <div className="mb-2 flex gap-1 overflow-x-auto pb-1">
+                {STATUS_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setStatusFilter(f.id)}
+                    className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${
+                      statusFilter === f.id
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
               <div className="mb-3 flex items-center gap-2">
                 <span className="text-sm text-gray-500 dark:text-gray-400">
-                  {books.length} book{books.length !== 1 ? "s" : ""}
+                  {visibleBooks.length} book{visibleBooks.length !== 1 ? "s" : ""}
                 </span>
                 <div className="ml-auto flex items-center gap-1">
                   {/* Sort */}
@@ -379,11 +511,17 @@ export function App() {
               {/* Book list */}
               {viewMode === "grid" ? (
                 <ul className="grid grid-cols-3 gap-2">
-                  {sortedBooks.map((book) => (
+                  {visibleBooks.map((book) => (
                     <li key={book.id}>
                       <button
                         type="button"
-                        onClick={() => void openBook(book)}
+                        onClick={() => {
+                          if (lpFired.current) { lpFired.current = false; return; }
+                          void openBook(book);
+                        }}
+                        onTouchStart={() => startBookLongPress(book)}
+                        onTouchEnd={cancelBookLongPress}
+                        onTouchMove={cancelBookLongPress}
                         className="w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-sm hover:shadow dark:border-gray-700 dark:bg-gray-800"
                       >
                         {/* Cover */}
@@ -402,6 +540,11 @@ export function App() {
                           <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                             {book.language.toUpperCase()} · {book.chapters} chapters
                           </div>
+                          {book.stars ? (
+                            <div className="mt-0.5 text-xs text-amber-400">
+                              {"★".repeat(book.stars)}
+                            </div>
+                          ) : null}
                         </div>
                       </button>
                     </li>
@@ -409,7 +552,7 @@ export function App() {
                 </ul>
               ) : (
                 <ul className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {sortedBooks.map((book) => (
+                  {visibleBooks.map((book) => (
                     <li key={book.id}>
                       <button
                         type="button"
@@ -424,15 +567,42 @@ export function App() {
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate font-medium">{book.title}</div>
+                          <div className="truncate font-medium">
+                            {book.title}
+                            {book.stars ? (
+                              <span className="ml-1.5 text-xs text-amber-400">{"★".repeat(book.stars)}</span>
+                            ) : null}
+                          </div>
                           <div className="text-xs text-gray-500 dark:text-gray-400">
                             {book.author && <span className="mr-1">{book.author}</span>}
                             {book.language.toUpperCase()} · {book.chapters} chapters
                           </div>
+                          {(book.tags ?? []).length > 0 && (
+                            <div className="mt-0.5 flex flex-wrap gap-1">
+                              {book.tags!.slice(0, 3).map((t) => (
+                                <span key={t} className="rounded bg-gray-100 px-1.5 py-px text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         <button
                           type="button"
-                          onClick={(e) => void deleteBook(e, book.id)}
+                          onClick={(e) => { e.stopPropagation(); setSheetBook(book); }}
+                          className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+                          title="Details"
+                          aria-label={`Details for ${book.title}`}
+                        >
+                          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                            <circle cx="12" cy="5" r="1.8" />
+                            <circle cx="12" cy="12" r="1.8" />
+                            <circle cx="12" cy="19" r="1.8" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => requestDeleteBook(e, book.id)}
                           className="shrink-0 rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
                           title="Delete"
                         >
@@ -445,10 +615,49 @@ export function App() {
                   ))}
                 </ul>
               )}
+              {visibleBooks.length === 0 && (
+                <p className="py-12 text-center text-sm text-gray-400">
+                  No books with this status yet.
+                </p>
+              )}
             </>
           )}
         </main>
       )}
+
+      {view !== "reader" && (
+        <BottomNav
+          view={view}
+          downloadsActive={activeDownloads.count > 0}
+          onNavigate={(tab) => {
+            if (tab === "dictionary") openDictionary("ja");
+            else setView(tab);
+          }}
+        />
+      )}
+
+      <ActionSheet
+        open={pendingDeleteId !== null}
+        title="Delete this book?"
+        message="The book and its reading progress will be removed from your library."
+        actions={[
+          { label: "Delete", destructive: true, onSelect: () => void confirmDeleteBook() },
+        ]}
+        onClose={() => setPendingDeleteId(null)}
+      />
+
+      <BookSheet
+        book={sheetBook}
+        onClose={() => setSheetBook(null)}
+        onUpdated={(meta) => {
+          setSheetBook(meta);
+          setBooks((prev) => {
+            const next = prev.map((b) => (b.id === meta.id ? meta : b));
+            saveBookCache(next);
+            return next;
+          });
+        }}
+      />
     </div>
   );
 }

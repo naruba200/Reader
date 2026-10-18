@@ -5,6 +5,7 @@ import type {
   DifficultyRating,
 } from "../core/types";
 import { buildParagraphNodes, paragraphRangesForBlock } from "./spans";
+import { furiganaFor } from "./furigana";
 import type { Page } from "./pages";
 
 export interface ChapterViewProps {
@@ -20,10 +21,16 @@ export interface ChapterViewProps {
   vertical?: boolean;
   /** Base font size in px applied to the chapter text. */
   fontSize?: number;
+  /** Line height multiplier applied to paragraphs (overrides leading-relaxed). */
+  lineHeight?: number;
+  /** Horizontal content padding in px (overrides the default px-4). */
+  contentPaddingX?: number;
   /** Index of the currently spoken sentence for TTS highlighting (-1 when not speaking). */
   ttsSentenceIndex?: number;
   /** Array of sentences being spoken by TTS. */
   ttsSentences?: string[];
+  /** Show furigana (ruby) readings above kanji words (Japanese). */
+  furigana?: boolean;
   /** Grammar pattern matches to highlight. */
   grammarMatches?: { start: number; end: number; pattern: string; definition: string }[];
 }
@@ -45,8 +52,11 @@ export const ChapterView = memo(function ChapterView({
   page,
   vertical = false,
   fontSize,
+  lineHeight,
+  contentPaddingX,
   ttsSentenceIndex = -1,
   ttsSentences = [],
+  furigana = false,
   grammarMatches = [],
 }: ChapterViewProps) {
   const text = chapter.text;
@@ -122,7 +132,11 @@ export const ChapterView = memo(function ChapterView({
         return;
       }
       const textNode = (
-        <p key={`t:${bi}`} className={paragraphClass}>
+        <p
+          key={`t:${bi}`}
+          className={paragraphClass}
+          style={lineHeight ? { lineHeight } : undefined}
+        >
           {paragraphRangesForBlock(text, block.start, block.end).map((para) =>
             buildParagraphNodes(text, para, tokens).map((node) => {
               const grammarMatch = node.token ? grammarMatchFor(node.start, node.length) : undefined;
@@ -157,7 +171,20 @@ export const ChapterView = memo(function ChapterView({
                       : undefined
                   }
                 >
-                  {node.text}
+                  {(() => {
+                    if (!furigana) return node.text;
+                    const furi = furiganaFor(node.token!);
+                    if (!furi) return node.text;
+                    return (
+                      <>
+                        <ruby>
+                          {node.token!.surface}
+                          <rt className="text-[0.55em]">{furi}</rt>
+                        </ruby>
+                        {node.text.slice(node.token!.surface.length)}
+                      </>
+                    );
+                  })()}
                 </span>
               ) : (
                 <span
@@ -175,11 +202,18 @@ export const ChapterView = memo(function ChapterView({
       texts.push(textNode);
     });
     return { allNodes: all, textNodes: texts, imageNodes: images };
-  }, [items, text, tokens, paragraphClass, levelClass, onWordClick, vertical, isTtsHighlighted, grammarMatchFor]);
+  }, [items, text, tokens, paragraphClass, levelClass, onWordClick, vertical, lineHeight, furigana, isTtsHighlighted, grammarMatchFor]);
+
+  const articleStyle: React.CSSProperties = {
+    ...(fontSize ? { fontSize: `${fontSize}px` } : undefined),
+    ...(contentPaddingX !== undefined
+      ? { paddingLeft: `${contentPaddingX}px`, paddingRight: `${contentPaddingX}px` }
+      : undefined),
+  };
 
   return (
     <article
-      style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
+      style={Object.keys(articleStyle).length > 0 ? articleStyle : undefined}
       className={
         vertical ? "relative h-full flex flex-col py-8 px-4" : "relative max-w-prose mx-auto py-8 px-4"
       }

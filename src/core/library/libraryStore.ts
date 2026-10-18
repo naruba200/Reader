@@ -6,6 +6,9 @@ const STORE_META = "meta";
 const STORE_DOCS = "docs";
 const STORE_PROGRESS = "progress";
 
+/** Reading status for the library shelf. */
+export type ReadingStatus = "want" | "reading" | "finished";
+
 /** Lightweight book metadata shown in the library list (no full document). */
 export interface StoredBookMeta {
   id: string;
@@ -18,6 +21,12 @@ export interface StoredBookMeta {
   author?: string;
   coverUrl?: string;
   lastReadAt?: number;
+  /** User tags / collections. */
+  tags?: string[];
+  /** Reading status shelf. */
+  status?: ReadingStatus;
+  /** Star rating 1–5. */
+  stars?: number;
 }
 
 /** Last reading position within a book, keyed by book id. */
@@ -212,6 +221,74 @@ export class LibraryStore {
       get(STORE_META).delete(id);
       get(STORE_DOCS).delete(id);
       get(STORE_PROGRESS).delete(id);
+      return Promise.resolve();
+    });
+  }
+
+  /** Patch metadata fields (tags, status, stars) on a stored book. */
+  async updateMeta(
+    id: string,
+    patch: { tags?: string[]; status?: ReadingStatus | "none"; stars?: number },
+  ): Promise<StoredBookMeta | undefined> {
+    return this.withStores([STORE_META], "readwrite", (get) => {
+      const store = get(STORE_META);
+      return new Promise<StoredBookMeta | undefined>((resolve, reject) => {
+        const req = store.get(id);
+        req.onsuccess = () => {
+          const meta = req.result as StoredBookMeta | undefined;
+          if (!meta) { resolve(undefined); return; }
+          const updated: StoredBookMeta = { ...meta };
+          if (patch.tags !== undefined) {
+            updated.tags = patch.tags.map((t) => t.trim()).filter(Boolean);
+            if (updated.tags.length === 0) delete updated.tags;
+          }
+          if (patch.status !== undefined) {
+            if (patch.status === "none") delete updated.status;
+            else updated.status = patch.status;
+          }
+          if (patch.stars !== undefined) {
+            if (!patch.stars) delete updated.stars;
+            else updated.stars = Math.min(5, Math.max(1, patch.stars));
+          }
+          store.put(updated);
+          resolve(updated);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    });
+  }
+
+  /** All stored reading-progress records (for backup). */
+  async listProgress(): Promise<StoredProgress[]> {
+    const db = await this.db();
+    return new Promise<StoredProgress[]>((resolve, reject) => {
+      const request = db
+        .transaction(STORE_PROGRESS, "readonly")
+        .objectStore(STORE_PROGRESS)
+        .getAll();
+      request.onsuccess = () => resolve((request.result as StoredProgress[]) ?? []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  /** Restore progress records (for backup import). */
+  async putProgress(records: StoredProgress[]): Promise<void> {
+    await this.withStores([STORE_PROGRESS], "readwrite", (get) => {
+      const store = get(STORE_PROGRESS);
+      for (const r of records) {
+        if (r && r.id) store.put(r);
+      }
+      return Promise.resolve();
+    });
+  }
+
+  /** Restore metadata records (for backup import). */
+  async putMetas(metas: StoredBookMeta[]): Promise<void> {
+    await this.withStores([STORE_META], "readwrite", (get) => {
+      const store = get(STORE_META);
+      for (const m of metas) {
+        if (m && m.id) store.put(m);
+      }
       return Promise.resolve();
     });
   }

@@ -13,6 +13,8 @@ export interface WordPopoverProps {
   entry?: DictionaryEntry;
   onClose: () => void;
   onOpenInDictionary?: (lemma: string) => void;
+  onSaveWord?: () => void;
+  wordSaved?: boolean;
 }
 
 const WIDTH = 288; // w-72
@@ -24,6 +26,8 @@ export function WordPopover({
   entry,
   onClose,
   onOpenInDictionary,
+  onSaveWord,
+  wordSaved,
 }: WordPopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(0);
@@ -77,6 +81,8 @@ export function WordPopover({
         entry={entry}
         level={popover.token.level}
         onClose={onClose}
+        onSaveWord={onSaveWord}
+        wordSaved={wordSaved}
         onOpenInDictionary={
           onOpenInDictionary
             ? () => onOpenInDictionary(popover.token.lemma)

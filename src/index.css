@@ -148,6 +148,27 @@ body,
   to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 }
 
+/* Bottom sheet (action sheet) entrance */
+.sheet-enter {
+  animation: sheet-in 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+@keyframes sheet-in {
+  from { opacity: 0.5; transform: translateY(40px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Safe-area insets for edge-to-edge Android (notch, gesture bar) */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.px-safe {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
 /* Footer icon button active state */
 .reader-icon-btn {
   @apply flex items-center justify-center rounded-lg p-2.5 text-gray-500 transition-colors dark:text-gray-400;
