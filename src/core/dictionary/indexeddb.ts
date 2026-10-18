@@ -6,6 +6,7 @@ import {
   type DictionaryStore,
 } from "./store";
 import type { PackInfo, WordIndexRecord } from "./pack";
+import { orderSourcesByPriority } from "./packPriority";
 
 const DB_NAME = "smart-reader";
 const DB_VERSION = 4;
@@ -119,10 +120,15 @@ export class IndexedDbDictionaryStore {
       );
       return record?.entry;
     }
-    // Without source, search all sources for this language.
+    // Without source, search installed sources for this language in the
+    // user's priority order.
     const normalized = normalizeKey(word, this.language);
-    // Try common sources in order of likelihood.
-    for (const src of ["JMDict", "KANJIDIC2", "Tae Kim's Grammar", "JLPT Grammar", "WordNet"]) {
+    const installed = await this.listPackInfos().catch(() => [] as PackInfo[]);
+    const ordered = orderSourcesByPriority(
+      this.language,
+      installed.map((info) => info.source),
+    );
+    for (const src of ordered) {
       const key = entryKey(this.language, src, normalized);
       const record = await run<{ key: string; entry: DictionaryEntry } | undefined>(
         db, STORE_ENTRIES, "readonly", (store) => store.get(key),
@@ -211,6 +217,28 @@ export class IndexedDbDictionaryStore {
     const db = await this.db();
     const record = { ...info, key: packInfoKey(this.language, info.source) };
     await run(db, STORE_PACKS, "readwrite", (store) => store.put(record));
+  }
+
+  /** Return all installed pack infos for this language. */
+  async listPackInfos(): Promise<PackInfo[]> {
+    const db = await this.db();
+    const range = IDBKeyRange.bound(`${this.language}:`, `${this.language}:\uffff`);
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PACKS, "readonly");
+      const store = tx.objectStore(STORE_PACKS);
+      const req = store.openCursor(range);
+      const out: PackInfo[] = [];
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          out.push(cursor.value as unknown as PackInfo);
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve(out);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
   }
 
   async deletePack(source?: string): Promise<void> {

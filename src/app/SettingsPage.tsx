@@ -1,11 +1,18 @@
 import { useEffect, useState } from "react";
-import { useTheme } from "./ThemeContext";
+import { useTheme, type ThemePreference } from "./ThemeContext";
+import { loadFollowSystemFontSize, saveFollowSystemFontSize } from "../reader/systemPrefs";
 import { exportBackup, importBackup } from "../core/library/backup";
 import { getLibraryStore } from "../core/library/libraryStore";
 import { loadWordBank } from "../study/wordBank";
 import { loadStats, setDailyGoal, formatDuration, todayKey } from "../study/stats";
 
 type LibraryViewMode = "grid" | "list";
+
+const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+  { id: "auto", label: "Auto" },
+];
 
 export function SettingsPage({
   viewMode,
@@ -14,11 +21,20 @@ export function SettingsPage({
   viewMode: LibraryViewMode;
   onViewModeChange: (mode: LibraryViewMode) => void;
 }) {
-  const { theme, toggleTheme } = useTheme();
+  const { preference, setThemePreference } = useTheme();
   const [bookCount, setBookCount] = useState<number | null>(null);
   const [wordCount, setWordCount] = useState(0);
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
   const [stats, setStats] = useState(() => loadStats());
+  const [followSystemFont, setFollowSystemFont] = useState<boolean>(() => loadFollowSystemFontSize());
+
+  const toggleFollowSystemFont = () => {
+    setFollowSystemFont((v) => {
+      const next = !v;
+      saveFollowSystemFontSize(next);
+      return next;
+    });
+  };
 
   const todayMs = stats.perDay[todayKey()] ?? 0;
   const goalPct = Math.min(100, Math.round((todayMs / (stats.goalMin * 60_000)) * 100));
@@ -59,19 +75,54 @@ export function SettingsPage({
           Appearance
         </h2>
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="flex w-full items-center justify-between px-4 py-3 text-left active:bg-gray-50 dark:active:bg-gray-700/50"
-          >
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className="font-medium">Theme</span>
+            <div
+              role="group"
+              aria-label="Theme"
+              className="flex overflow-hidden rounded-lg border border-gray-300 dark:border-gray-600"
+            >
+              {THEME_OPTIONS.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  onClick={() => setThemePreference(o.id)}
+                  aria-pressed={preference === o.id}
+                  className={`px-4 py-1.5 text-sm font-medium ${
+                    preference === o.id
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-600 dark:text-gray-300"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 dark:border-gray-700">
             <span>
-              <span className="block font-medium">Theme</span>
+              <span className="block font-medium">Follow system font size</span>
               <span className="block text-sm text-gray-500 dark:text-gray-400">
-                {theme === "dark" ? "Dark" : "Light"} mode
+                Scale reader text with your device&apos;s text size setting
               </span>
             </span>
-            <span className="text-2xl">{theme === "dark" ? "🌙" : "☀️"}</span>
-          </button>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={followSystemFont}
+              aria-label="Follow system font size"
+              onClick={toggleFollowSystemFont}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                followSystemFont ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${
+                  followSystemFont ? "left-[22px]" : "left-0.5"
+                }`}
+              />
+            </button>
+          </div>
         </div>
       </section>
 
