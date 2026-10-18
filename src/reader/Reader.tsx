@@ -33,6 +33,8 @@ import { recordLookup } from "../study/history";
 import { saveWord, isWordSaved } from "../study/wordBank";
 import { addReadingTime } from "../study/stats";
 import { sentenceAround, kataToHira } from "./furigana";
+import { effectiveFontSize } from "../reader/systemPrefs";
+import { detectGrammar, type GrammarMatch } from "../core/language/grammar";
 import {
   getActiveEngine,
   getActiveVoiceId,
@@ -169,6 +171,18 @@ export function Reader({
     [book.id],
   );
 
+  // Derived reading flags (declared early: effects and callbacks below use them).
+  const isScroll = readingSettings.viewMode === "scroll";
+  const isVertical = readingMode === "vertical";
+  /** Pending scroll target applied once after layout ("initial" = saved page fraction). */
+  const pendingScrollRef = useRef<null | "top" | "bottom" | "initial" | { fraction: number }>(
+    initialPageIndex !== undefined && initialPageIndex > 0 ? "initial" : null,
+  );
+  const scrollRestoredForChapterRef = useRef(-1);
+  const prevIsScrollRef = useRef(isScroll);
+  /** Timestamp of the last scroll fling; taps right after one don't toggle chrome. */
+  const lastScrollTouchRef = useRef(0);
+
   // Device-level prefs
   const [brightness, setBrightnessState] = useState<number>(loadBrightness);
   const changeBrightness = useCallback((v: number) => {
@@ -204,6 +218,9 @@ export function Reader({
   const [showChapterSelect, setShowChapterSelect] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Grammar pattern matches for the current chapter (Japanese only, opt-in).
+  const [grammarMatches, setGrammarMatches] = useState<GrammarMatch[]>([]);
+  const [grammarToast, setGrammarToast] = useState<string | null>(null);
 
   // TTS state
   const [ttsPlaying, setTtsPlaying] = useState(false);
@@ -370,6 +387,76 @@ export function Reader({
     return () => { cancelled = true; };
   }, [processor, chapter]);
 
+  // Grammar pattern detection (Japanese only, opt-in per book). Runs on the
+  // raw Kuromoji stream so particles/auxiliaries are visible to the matcher.
+  useEffect(() => {
+    if (!readingSettings.grammarHighlight || book.language !== "ja") {
+      setGrammarMatches([]);
+      return;
+    }
+    let cancelled = false;
+    setGrammarMatches([]);
+    detectGrammar(chapter.text)
+      .then((m) => { if (!cancelled) setGrammarMatches(m); })
+      .catch(() => { if (!cancelled) setGrammarMatches([]); });
+    return () => { cancelled = true; };
+  }, [readingSettings.grammarHighlight, book.language, chapter.text]);
+
+  // Scroll mode: after layout, jump to the pending scroll target (saved page
+  // fraction on open, top/bottom on chapter navigation, current page when
+  // switching from paged mode). One-shot per chapter.
+  useEffect(() => {
+    const wasScroll = prevIsScrollRef.current;
+    prevIsScrollRef.current = isScroll;
+    if (!isScroll || busy) return;
+    if (wasScroll && scrollRestoredForChapterRef.current === chapterIndex) return;
+    scrollRestoredForChapterRef.current = chapterIndex;
+    if (!wasScroll && pendingScrollRef.current === null) {
+      pendingScrollRef.current = { fraction: pageIndex / Math.max(1, pages.length) };
+    }
+    const apply = () => {
+      const el = contentRef.current;
+      const pending = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+      if (!el) return;
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      if (pending === "bottom") {
+        if (isVertical) el.scrollLeft = maxLeft;
+        else el.scrollTop = maxTop;
+      } else if (pending === "initial" || (pending !== null && typeof pending === "object")) {
+        const frac = Math.min(
+          0.999,
+          Math.max(0, pending === "initial" ? pageIndex / Math.max(1, pages.length) : pending.fraction),
+        );
+        if (isVertical) el.scrollLeft = frac * maxLeft;
+        else el.scrollTop = frac * maxTop;
+      } else if (isVertical) {
+        el.scrollLeft = 0;
+      } else {
+        el.scrollTop = 0;
+      }
+    };
+    const raf = requestAnimationFrame(() => requestAnimationFrame(apply));
+    return () => cancelAnimationFrame(raf);
+  }, [isScroll, busy, chapterIndex, isVertical, pageIndex, pages.length]);
+
+  // Scroll mode: derive the page index from the scroll fraction so the page
+  // indicator and saved progress keep working.
+  const handleScroll = useCallback(() => {
+    if (!isScroll) return;
+    const el = contentRef.current;
+    if (!el || pages.length <= 1) return;
+    const max = isVertical
+      ? el.scrollWidth - el.clientWidth
+      : el.scrollHeight - el.clientHeight;
+    if (max <= 0) return;
+    const pos = isVertical ? el.scrollLeft : el.scrollTop;
+    const frac = Math.min(1, Math.max(0, pos / max));
+    const derived = Math.min(pages.length - 1, Math.floor(frac * pages.length));
+    setPageIndex((prev) => (prev === derived ? prev : derived));
+  }, [isScroll, isVertical, pages.length]);
+
   const levelClass = useCallback(
     (level: Level) => {
       if (!shouldHighlightLevel(level, highlightMode)) return null;
@@ -381,6 +468,10 @@ export function Reader({
   const handleWordClick = useCallback(
     (token: AnalyzedToken, pos: { x: number; y: number }) => {
       tapTick();
+      // Grammar highlight is tap-to-explain on mobile (title tooltips don't
+      // work on touch): show the pattern + definition as a toast.
+      const gm = grammarMatches.find((m) => token.start >= m.start && token.start < m.end);
+      if (gm) setGrammarToast(`${gm.pattern}: ${gm.definition}`);
       recordLookup(token.lemma?.trim() || token.surface, book.language);
       setPopover({ token, x: pos.x, y: pos.y });
       setEntry(undefined);
@@ -396,13 +487,30 @@ export function Reader({
         setEntry(undefined);
       })().catch(() => setEntry(undefined));
     },
-    [book.language],
+    [book.language, grammarMatches],
   );
 
   // Page navigation with animation
   const goPrev = useCallback(() => {
     if (isAnimating) return;
     tapTick();
+    if (isScroll) {
+      // Scroll mode: page buttons move by viewport; at the chapter start,
+      // jump to the end of the previous chapter.
+      const el = contentRef.current;
+      if (!el) return;
+      const atStart = isVertical ? el.scrollLeft <= 1 : el.scrollTop <= 1;
+      if (atStart && chapterIndex > 0) {
+        pendingScrollRef.current = "bottom";
+        setPageIndex(0);
+        setChapterIndex(chapterIndex - 1);
+      } else if (isVertical) {
+        el.scrollBy({ left: -el.clientWidth * 0.9, behavior: "smooth" });
+      } else {
+        el.scrollBy({ top: -el.clientHeight * 0.9, behavior: "smooth" });
+      }
+      return;
+    }
     if (pageIndex > 0) {
       setIsAnimating(true);
       setTimeout(() => {
@@ -418,11 +526,30 @@ export function Reader({
         setIsAnimating(false);
       }, 200);
     }
-  }, [pageIndex, chapterIndex, book.chapters, isAnimating]);
+  }, [pageIndex, chapterIndex, book.chapters, isAnimating, isScroll, isVertical]);
 
   const goNext = useCallback(() => {
     if (isAnimating) return;
     tapTick();
+    if (isScroll) {
+      // Scroll mode: page buttons move by viewport; at the chapter end,
+      // jump to the start of the next chapter.
+      const el = contentRef.current;
+      if (!el) return;
+      const atEnd = isVertical
+        ? el.scrollLeft + el.clientWidth >= el.scrollWidth - 1
+        : el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      if (atEnd && chapterIndex < book.chapters.length - 1) {
+        pendingScrollRef.current = "top";
+        setPageIndex(0);
+        setChapterIndex(chapterIndex + 1);
+      } else if (isVertical) {
+        el.scrollBy({ left: el.clientWidth * 0.9, behavior: "smooth" });
+      } else {
+        el.scrollBy({ top: el.clientHeight * 0.9, behavior: "smooth" });
+      }
+      return;
+    }
     if (pageIndex < pages.length - 1) {
       setIsAnimating(true);
       setTimeout(() => {
@@ -437,7 +564,7 @@ export function Reader({
         setIsAnimating(false);
       }, 200);
     }
-  }, [pageIndex, pages.length, chapterIndex, book.chapters.length, isAnimating]);
+  }, [pageIndex, pages.length, chapterIndex, book.chapters.length, isAnimating, isScroll, isVertical]);
 
   // Tap zones: 15% left/right for page turns, 70% center for controls
   const handleContentClick = useCallback(
@@ -445,6 +572,13 @@ export function Reader({
       if (popover) return;
       if (Date.now() - popoverCloseTimeRef.current < 300) return;
       if ((e.target as HTMLElement).closest("[data-word]")) return;
+      if (isScroll) {
+        // No edge-tap page turns in scroll mode; taps toggle the chrome.
+        // A tap right after a scroll fling is the fling settling, not a tap.
+        if (Date.now() - lastScrollTouchRef.current < 350) return;
+        toggleControls();
+        return;
+      }
       if (navigationMode === "swipe") {
         toggleControls();
         return;
@@ -456,7 +590,7 @@ export function Reader({
       else if (ratio > 0.85) goNext();
       else toggleControls();
     },
-    [goPrev, goNext, toggleControls, popover, navigationMode],
+    [goPrev, goNext, toggleControls, popover, navigationMode, isScroll],
   );
 
   // Swipe handling
@@ -470,20 +604,28 @@ export function Reader({
 
   const handleTouchEnd = useCallback(
     (e: TouchEvent<HTMLDivElement>) => {
-      if (navigationMode === "tap") return;
       const start = touchStartRef.current;
       touchStartRef.current = null;
       if (!start) return;
       const t = e.changedTouches[0];
       const dx = t.clientX - start.x;
       const dy = t.clientY - start.y;
+      if (isScroll) {
+        // Scroll mode scrolls natively: never page-turn, and remember flings
+        // so the click that follows one doesn't toggle the chrome.
+        if (Math.abs(dy) > 12 && Math.abs(dy) >= Math.abs(dx)) {
+          lastScrollTouchRef.current = Date.now();
+        }
+        return;
+      }
+      if (navigationMode === "tap") return;
       if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy)) return;
       const el = contentRef.current;
       if (el && el.scrollLeft > 0) return;
       if (dx < 0) goNext();
       else goPrev();
     },
-    [goNext, goPrev, navigationMode],
+    [goNext, goPrev, navigationMode, isScroll],
   );
 
   // TTS - load voices for current language; also refresh when the voice
@@ -696,8 +838,6 @@ export function Reader({
     readingFilter === "warm" ? "bg-[rgb(255,249,235)] dark:bg-[rgb(35,30,22)]" :
     readingFilter === "dark-warm" ? "bg-[rgb(240,235,225)] dark:bg-[rgb(25,22,18)]" : "bg-white dark:bg-gray-900";
 
-  const isVertical = readingMode === "vertical";
-
   return (
     <div className={`relative flex h-full flex-col overflow-hidden ${isAmoled ? "dark" : ""}`}>
       {/* In-app brightness dim overlay (below sheets/popovers) */}
@@ -784,6 +924,7 @@ export function Reader({
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         onClick={handleContentClick}
+        onScroll={handleScroll}
         className={`flex-1 ${isVertical ? "overflow-x-auto overflow-y-hidden touch-auto" : "overflow-y-auto touch-pan-y"} ${filterClass} ${isAmoled ? "bg-black" : ""} pt-1`}
         style={{ fontFamily: TYPEFACE_STACKS[readingSettings.typeface] }}
       >
@@ -798,14 +939,15 @@ export function Reader({
             rating={rating}
             levelClass={levelClass}
             onWordClick={handleWordClick}
-            page={page}
+            page={isScroll ? undefined : page}
             vertical={isVertical}
-            fontSize={readingSettings.fontSize}
+            fontSize={effectiveFontSize(readingSettings)}
             lineHeight={readingSettings.lineHeight}
             contentPaddingX={readingSettings.marginX}
             furigana={furigana && book.language === "ja"}
             ttsSentenceIndex={ttsSentenceIndex}
             ttsSentences={ttsPlaying ? sentencesRef.current : []}
+            grammarMatches={grammarMatches}
           />
         )}
       </div>
@@ -1129,6 +1271,10 @@ export function Reader({
 
       {/* Toast notification */}
       {toast && <Toast message={toast} onDone={() => setToast(null)} />}
+      {/* Grammar pattern explanation (longer-lived than regular toasts) */}
+      {grammarToast && (
+        <Toast message={grammarToast} duration={6000} onDone={() => setGrammarToast(null)} />
+      )}
     </div>
   );
 }
