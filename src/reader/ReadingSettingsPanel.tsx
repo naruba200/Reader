@@ -1,6 +1,7 @@
 import type {
   ReadingSettings,
   TypefaceId,
+  ViewMode,
 } from "./readingSettings";
 import {
   FONT_SIZE_MIN,
@@ -24,6 +25,51 @@ export interface ReadingSettingsPanelProps {
 }
 
 const TYPEFACES: TypefaceId[] = ["default", "serif", "sans", "mincho"];
+
+const VIEW_MODES: { id: ViewMode; label: string }[] = [
+  { id: "paged", label: "Paged" },
+  { id: "scroll", label: "Scroll" },
+];
+
+function ToggleRow({
+  title,
+  subtitle,
+  checked,
+  onToggle,
+}: {
+  title: string;
+  subtitle: string;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="flex w-full items-center justify-between py-3 text-left"
+    >
+      <span>
+        <span className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+          {title}
+        </span>
+        <span className="block text-xs text-gray-500 dark:text-gray-400">
+          {subtitle}
+        </span>
+      </span>
+      <span
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          checked ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+            checked ? "translate-x-5" : "translate-x-0.5"
+          }`}
+        />
+      </span>
+    </button>
+  );
+}
 
 function SliderRow({
   label,
@@ -123,6 +169,29 @@ export function ReadingSettingsPanel({
           </div>
         </div>
 
+        <div className="py-2">
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">View mode</span>
+          <div className="mt-1 grid grid-cols-2 gap-1">
+            {VIEW_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => onChange({ viewMode: m.id })}
+                className={`rounded-lg border px-2 py-2 text-xs font-medium ${
+                  settings.viewMode === m.id
+                    ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
+                    : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Scroll shows the whole chapter as one continuous page.
+          </p>
+        </div>
+
         <SliderRow
           label="Line height"
           value={settings.lineHeight}
@@ -151,6 +220,13 @@ export function ReadingSettingsPanel({
           max={100}
           step={1}
           onChange={(v) => onBrightnessChange(v / 100)}
+        />
+
+        <ToggleRow
+          title="Highlight grammar patterns"
+          subtitle="Japanese only · tap a highlighted phrase to see its meaning"
+          checked={settings.grammarHighlight}
+          onToggle={() => onChange({ grammarHighlight: !settings.grammarHighlight })}
         />
 
         <button

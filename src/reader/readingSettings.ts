@@ -2,12 +2,18 @@
 
 export type TypefaceId = "default" | "serif" | "sans" | "mincho";
 
+/** Chapter rendering mode: paginated pages or one continuous scroll. */
+export type ViewMode = "paged" | "scroll";
+
 export interface ReadingSettings {
   fontSize: number;
   typeface: TypefaceId;
   lineHeight: number;
   /** Horizontal content padding in px. */
   marginX: number;
+  viewMode: ViewMode;
+  /** Highlight detected Japanese grammar patterns (Japanese books only). */
+  grammarHighlight: boolean;
 }
 
 export const DEFAULT_READING_SETTINGS: ReadingSettings = {
@@ -15,6 +21,8 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   typeface: "default",
   lineHeight: 1.75,
   marginX: 16,
+  viewMode: "paged",
+  grammarHighlight: false,
 };
 
 export const FONT_SIZE_MIN = 13;
@@ -67,6 +75,8 @@ function clampSettings(p: Partial<ReadingSettings>): ReadingSettings {
     typeface: p.typeface ?? DEFAULT_READING_SETTINGS.typeface,
     lineHeight: Math.min(LINE_HEIGHT_MAX, Math.max(LINE_HEIGHT_MIN, p.lineHeight ?? DEFAULT_READING_SETTINGS.lineHeight)),
     marginX: Math.min(MARGIN_X_MAX, Math.max(MARGIN_X_MIN, p.marginX ?? DEFAULT_READING_SETTINGS.marginX)),
+    viewMode: p.viewMode === "scroll" || p.viewMode === "paged" ? p.viewMode : DEFAULT_READING_SETTINGS.viewMode,
+    grammarHighlight: p.grammarHighlight ?? DEFAULT_READING_SETTINGS.grammarHighlight,
   };
 }
 

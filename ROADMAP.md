@@ -19,7 +19,7 @@ reading first, studying second, everything else third.
 - [x] Bottom-sheet action sheets instead of `confirm()` dialogs
 - [x] Immersive reader: auto-hiding chrome, tap to toggle (existed, kept)
 - [ ] Adaptive icon + splash screen
-- [ ] Repo hygiene: gitignore `node_modules/`, `dist/`, test novels; APKs via GitHub Releases
+- [x] Repo hygiene: `.gitignore` added (`node_modules/`, `dist/`, test novels, APKs). Note: already-tracked files need one `git rm -r --cached` in a full local clone to actually untrack; APKs ship via GitHub Releases (manual web-UI step — the GitHub App can't create releases)
 
 ## Phase 1 — Reader comfort
 
@@ -27,7 +27,7 @@ reading first, studying second, everything else third.
 - [x] Themes: day / night / sepia / warm / true-black AMOLED (AMOLED forces dark + pure black chrome); auto-switch at sunset — not built
 - [x] In-app brightness slider (dim overlay)
 - [x] Page-turn gestures: edge tap zones, swipe (existed); volume-key paging skipped — Android intercepts volume keys before they reach the WebView, no web API available
-- [ ] Scroll mode as alternative to paginated mode
+- [x] Scroll mode as alternative to paginated mode (per-book "View mode" setting in the reading panel; renders the full chapter with scroll-fraction progress tracking)
 - [x] Keep-awake toggle while reading (Wake Lock API)
 - [x] Haptics on page turn and word lookup (`navigator.vibrate`, guarded)
 
@@ -46,7 +46,7 @@ reading first, studying second, everything else third.
 - [x] Furigana toggle (ruby readings from the kuromoji tokenizer, Japanese books only) — per-JLPT-level filtering not built
 - [ ] Pitch-accent display on dictionary entries — skipped: no pitch-accent data source in the repo
 - [x] Words color-coded by JLPT level (existed); per-book difficulty analysis (existed: rating badge)
-- [ ] Grammar pattern detection with plain-language explanations — not built (`ChapterView` already accepts `grammarMatches` if a detector is added later)
+- [x] Grammar pattern detection with plain-language explanations (39 patterns via kuromoji, `src/core/language/grammar.ts`; highlights in the reader + tap for explanation)
 - [ ] Sentence-aligned parallel translation view for hard passages — skipped: no translation data source / would need a backend
 - [ ] Clipboard-monitor lookup (copy a word anywhere → floating definition) — not built: needs a native overlay service
 
@@ -54,19 +54,19 @@ reading first, studying second, everything else third.
 
 - [x] Collections via tags, reading-status shelves (Want to read / Reading / Finished filter chips; opening a book auto-marks it Reading), star ratings — long-press a book (or ⋯) for the details sheet (`src/app/BookSheet.tsx`)
 - [x] Reading status (want to read / reading / finished) + star ratings
-- [ ] Full metadata editing (title/author) — tags, status and stars are editable; duplicate-import detection already existed
+- [x] Full metadata editing (title/author) — editable in the book details sheet; tags, status and stars were already editable
 - [ ] Share-sheet import; "Open with" intent filters; OPDS catalog support — skipped: native Android work (intent filters, manifest), can't be done in the web layer
 - [x] Storage manager: per-book sizes in the book details sheet; library/word-bank counts + backup in Settings — no "clear cache" (dictionary packs are managed in Downloads)
 - [x] Full backup/restore to a single JSON file (metadata + progress + settings + word bank + lookup history; book files must be re-imported)
-- [ ] Offline dictionary packs: pause/resume, Wi-Fi-only downloads
-- [ ] Multiple dictionaries with priority ordering; robust deinflection
+- [x] Offline dictionary packs: pause/resume (Range-request resume, byte-exact so no duplicate entries), Wi-Fi-only downloads setting
+- [x] Multiple dictionaries with priority ordering (reorder installed packs in Downloads); robust deinflection (causative, ちゃう/じゃう/とく/てる contractions, ば/たら/なきゃ, godan potential/volitional/imperative)
 
 ## Phase 5 — Platform & polish
 
 - [ ] Home-screen "continue reading" widget; launcher app shortcuts — skipped: native Android work (widget provider, manifest), can't be done in the web layer
 - [ ] Reading reminders; daily goal notifications — skipped: needs native notification scheduling
 - [x] Android back / predictive-back per screen (existed for reader/dictionary/downloads; extended to settings/study tabs)
-- [ ] Follow system dark mode; system font-size scaling; TalkBack labels — not built
+- [x] Follow system dark mode (Auto theme option with live switching); system font-size scaling (opt-in, measured from the system 1rem); TalkBack labels on icon-only buttons
 - [x] Reading stats: time read (`src/study/stats.ts` — total, per-day, per-book, day streak), daily goal with progress bar in Settings
 - [ ] Optional progress/bookmark/word-bank sync across devices — not built; manual JSON backup/restore covers the offline case
 

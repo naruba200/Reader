@@ -3,6 +3,7 @@ import {
   getLibraryStore,
   type ReadingStatus,
   type StoredBookMeta,
+  type UpdateMetaPatch,
 } from "../core/library/libraryStore";
 
 const STATUS_OPTIONS: { id: ReadingStatus | "none"; label: string }[] = [
@@ -28,10 +29,14 @@ export function BookSheet({
   onUpdated: (meta: StoredBookMeta) => void;
 }) {
   const [tagInput, setTagInput] = useState("");
+  const [titleInput, setTitleInput] = useState("");
+  const [authorInput, setAuthorInput] = useState("");
   const [size, setSize] = useState<string | null>(null);
 
   useEffect(() => {
     setTagInput("");
+    setTitleInput(book?.title ?? "");
+    setAuthorInput(book?.author ?? "");
     setSize(null);
     if (!book) return;
     let cancelled = false;
@@ -50,9 +55,21 @@ export function BookSheet({
 
   if (!book) return null;
 
-  const patch = async (p: { tags?: string[]; status?: ReadingStatus | "none"; stars?: number }) => {
+  const patch = async (p: UpdateMetaPatch) => {
     const updated = await getLibraryStore().updateMeta(book.id, p);
     if (updated) onUpdated(updated);
+  };
+
+  /** Commit title/author edits; cleared fields revert to the stored values. */
+  const commitTitleAuthor = () => {
+    const t = titleInput.trim();
+    const a = authorInput.trim();
+    if (!t) setTitleInput(book.title);
+    if (!a) setAuthorInput(book.author ?? "");
+    const p: UpdateMetaPatch = {};
+    if (t && t !== book.title) p.title = t;
+    if (a && a !== (book.author ?? "")) p.author = a;
+    if (Object.keys(p).length > 0) void patch(p);
   };
 
   const addTag = () => {
@@ -87,12 +104,35 @@ export function BookSheet({
         className="sheet-enter relative max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-4 pb-safe dark:bg-gray-800"
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <h2 className="pr-8 text-base font-semibold text-gray-900 dark:text-gray-100">
-          {book.title}
-        </h2>
-        {book.author && (
-          <p className="text-sm text-gray-500 dark:text-gray-400">{book.author}</p>
-        )}
+        <div className="pr-8">
+          <label htmlFor="booksheet-title" className="sr-only">
+            Book title
+          </label>
+          <input
+            id="booksheet-title"
+            type="text"
+            value={titleInput}
+            onChange={(e) => setTitleInput(e.target.value)}
+            onBlur={commitTitleAuthor}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
+            aria-label="Book title"
+            className="w-full rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-base font-semibold text-gray-900 hover:border-gray-300 focus:border-blue-500 focus:bg-white focus:outline-none dark:text-gray-100 dark:hover:border-gray-600 dark:focus:bg-gray-700"
+          />
+          <label htmlFor="booksheet-author" className="sr-only">
+            Book author
+          </label>
+          <input
+            id="booksheet-author"
+            type="text"
+            value={authorInput}
+            onChange={(e) => setAuthorInput(e.target.value)}
+            onBlur={commitTitleAuthor}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
+            aria-label="Book author"
+            placeholder="Author"
+            className="mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-sm text-gray-500 placeholder:text-gray-400 hover:border-gray-300 focus:border-blue-500 focus:bg-white focus:outline-none dark:text-gray-400 dark:hover:border-gray-600 dark:focus:bg-gray-700"
+          />
+        </div>
         <p className="mt-1 text-xs text-gray-400">
           {book.language.toUpperCase()} · {book.chapters} chapters
           {size !== null && ` · ${size}`}

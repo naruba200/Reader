@@ -29,7 +29,16 @@ export interface StoredBookMeta {
   stars?: number;
 }
 
-/** Last reading position within a book, keyed by book id. */
+/** Fields that can be patched on a stored book's metadata. */
+export interface UpdateMetaPatch {
+  tags?: string[];
+  status?: ReadingStatus | "none";
+  stars?: number;
+  /** New title; trimmed before applying. Empty strings are ignored (existing title kept). */
+  title?: string;
+  /** New author; trimmed before applying. Empty strings are ignored (existing author kept). */
+  author?: string;
+}
 export interface StoredProgress {
   id: string;
   chapterIndex: number;
@@ -225,10 +234,10 @@ export class LibraryStore {
     });
   }
 
-  /** Patch metadata fields (tags, status, stars) on a stored book. */
+  /** Patch metadata fields (tags, status, stars, title, author) on a stored book. */
   async updateMeta(
     id: string,
-    patch: { tags?: string[]; status?: ReadingStatus | "none"; stars?: number },
+    patch: UpdateMetaPatch,
   ): Promise<StoredBookMeta | undefined> {
     return this.withStores([STORE_META], "readwrite", (get) => {
       const store = get(STORE_META);
@@ -249,6 +258,14 @@ export class LibraryStore {
           if (patch.stars !== undefined) {
             if (!patch.stars) delete updated.stars;
             else updated.stars = Math.min(5, Math.max(1, patch.stars));
+          }
+          if (patch.title !== undefined) {
+            const t = patch.title.trim();
+            if (t) updated.title = t;
+          }
+          if (patch.author !== undefined) {
+            const a = patch.author.trim();
+            if (a) updated.author = a;
           }
           store.put(updated);
           resolve(updated);
