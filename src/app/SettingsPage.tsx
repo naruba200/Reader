@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useTheme, type ThemePreference } from "./ThemeContext";
+import { useTheme, THEME_OPTIONS } from "./ThemeContext";
 import { loadFollowSystemFontSize, saveFollowSystemFontSize } from "../reader/systemPrefs";
 import { exportBackup, importBackup } from "../core/library/backup";
 import { getLibraryStore } from "../core/library/libraryStore";
@@ -7,12 +7,6 @@ import { loadWordBank } from "../study/wordBank";
 import { loadStats, setDailyGoal, formatDuration, todayKey } from "../study/stats";
 
 type LibraryViewMode = "grid" | "list";
-
-const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
-  { id: "light", label: "Light" },
-  { id: "dark", label: "Dark" },
-  { id: "auto", label: "Auto" },
-];
 
 export function SettingsPage({
   viewMode,
@@ -77,27 +71,18 @@ export function SettingsPage({
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center justify-between px-4 py-3">
             <span className="font-medium">Theme</span>
-            <div
-              role="group"
+            <select
+              value={preference}
+              onChange={(e) => setThemePreference(e.target.value as (typeof THEME_OPTIONS)[number]["id"])}
               aria-label="Theme"
-              className="flex overflow-hidden rounded-lg border border-gray-300 dark:border-gray-600"
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
             >
               {THEME_OPTIONS.map((o) => (
-                <button
-                  key={o.id}
-                  type="button"
-                  onClick={() => setThemePreference(o.id)}
-                  aria-pressed={preference === o.id}
-                  className={`px-4 py-1.5 text-sm font-medium ${
-                    preference === o.id
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-600 dark:text-gray-300"
-                  }`}
-                >
+                <option key={o.id} value={o.id}>
                   {o.label}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 dark:border-gray-700">
             <span>
@@ -252,17 +237,6 @@ export function SettingsPage({
         </div>
       </section>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-          About
-        </h2>
-        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-          <p className="font-medium">Smart Reader</p>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Alpha — a Japanese-learner&apos;s ebook reader.
-          </p>
-        </div>
-      </section>
     </main>
   );
 }

@@ -215,11 +215,11 @@ export const ChapterView = memo(function ChapterView({
     <article
       style={Object.keys(articleStyle).length > 0 ? articleStyle : undefined}
       className={
-        vertical ? "relative h-full flex flex-col py-8 px-4" : "relative max-w-prose mx-auto py-8 px-4"
+        vertical ? "relative h-full flex flex-col py-6 px-5" : "relative max-w-prose mx-auto py-6 px-5"
       }
     >
-      <div className="mb-4 flex items-center gap-2 text-sm">
-        <span className="font-semibold">{chapter.title}</span>
+      <div className="mb-3 flex items-center gap-2 text-sm">
+        <span className="font-semibold tracking-tight">{chapter.title}</span>
         <span className={`ml-auto rounded px-2 py-0.5 text-xs font-medium ${RATING_BADGE[rating]}`}>
           {rating}
         </span>

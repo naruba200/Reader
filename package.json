@@ -21,6 +21,7 @@
     "@capacitor/android": "^8.5.0",
     "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.5.0",
+    "@capacitor/status-bar": "^8.0.4",
     "@patdx/kuromoji": "^1.0.4",
     "epubjs": "^0.3.93",
     "pdfjs-dist": "^6.2.108",
