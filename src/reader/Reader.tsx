@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
+import { Capacitor } from "@capacitor/core";
+import { StatusBar } from "@capacitor/status-bar";
 import type {
   AnalyzedToken,
   BookDocument,
@@ -34,6 +36,7 @@ import { saveWord, isWordSaved } from "../study/wordBank";
 import { addReadingTime } from "../study/stats";
 import { sentenceAround, kataToHira } from "./furigana";
 import { effectiveFontSize } from "../reader/systemPrefs";
+import { useTheme, THEME_OPTIONS, THEME_LABELS } from "../app/ThemeContext";
 import { detectGrammar, type GrammarMatch } from "../core/language/grammar";
 import {
   getActiveEngine,
@@ -100,26 +103,8 @@ const LEVEL_CLASS: Partial<Record<Level, string>> = {
   FREQ_RARE: "underline decoration-indigo-600 decoration-2 underline-offset-2 decoration-dotted",
 };
 
-type ReadingFilter = "none" | "sepia" | "warm" | "dark-warm" | "amoled";
-
-const FILTER_KEY = "smart-reader-reading-filter";
-
-function loadReadingFilter(): ReadingFilter {
-  try {
-    const v = localStorage.getItem(FILTER_KEY);
-    if (v === "sepia" || v === "warm" || v === "dark-warm" || v === "amoled") return v;
-  } catch { /* ignore */ }
-  return "none";
-}
-
-const FILTER_CYCLE: ReadingFilter[] = ["none", "sepia", "warm", "dark-warm", "amoled"];
-const FILTER_LABEL: Record<ReadingFilter, string> = {
-  none: "No filter",
-  sepia: "Sepia",
-  warm: "Warm",
-  "dark-warm": "Dark warm",
-  amoled: "AMOLED black",
-};
+/** Themes that apply a reading tint (shown as "active" on the theme button). */
+const TINT_THEMES = new Set(["sepia", "warm", "dark-warm", "amoled"]);
 
 type NavigationMode = "tap" | "swipe" | "both";
 const NAV_MODE_KEY = "smart-reader-navigation-mode";
@@ -210,7 +195,9 @@ export function Reader({
   }, []);
   const [levelDb, setLevelDb] = useState<LevelDb | null>(null);
   const [highlightMode, setHighlightMode] = useState<HighlightMode>(loadHighlightMode);
-  const [readingFilter, setReadingFilter] = useState<ReadingFilter>(loadReadingFilter);
+  // Unified app theme (single source of truth in ThemeContext); the reader
+  // applies the reading tint for sepia/warm/dark-warm/amoled.
+  const { preference: themePreference, setThemePreference } = useTheme();
   const [navigationMode, setNavigationMode] = useState<NavigationMode>(loadNavigationMode);
 
   // UI state
@@ -291,14 +278,12 @@ export function Reader({
   }, []);
 
   const changeReadingFilter = useCallback(() => {
-    setReadingFilter((prev) => {
-      const idx = FILTER_CYCLE.indexOf(prev);
-      const next = FILTER_CYCLE[(idx + 1) % FILTER_CYCLE.length];
-      try { localStorage.setItem(FILTER_KEY, next); } catch { /* ignore */ }
-      setToast(FILTER_LABEL[next]);
-      return next;
-    });
-  }, []);
+    const ids = THEME_OPTIONS.map((o) => o.id);
+    const idx = ids.indexOf(themePreference);
+    const next = ids[(idx + 1) % ids.length];
+    setThemePreference(next);
+    setToast(THEME_LABELS[next]);
+  }, [themePreference, setThemePreference]);
 
   const changeNavigationMode = useCallback(() => {
     setNavigationMode((prev) => {
@@ -323,6 +308,20 @@ export function Reader({
     onRegisterCloseHandler?.(() => setPopover(null));
     return () => onRegisterCloseHandler?.(null);
   }, [popover, onRegisterCloseHandler]);
+
+  // Hide the Android status bar while the reader chrome is hidden
+  // (immersive reading), restore it when controls show or on exit.
+  useEffect(() => {
+    if (Capacitor.getPlatform() !== "android") return;
+    if (controlsVisible) {
+      void StatusBar.show().catch(() => {});
+    } else {
+      void StatusBar.hide().catch(() => {});
+    }
+    return () => {
+      void StatusBar.show().catch(() => {});
+    };
+  }, [controlsVisible]);
 
   const chapter = book.chapters[chapterIndex] ?? book.chapters[0];
   const pages = useMemo(() => paginateChapter(chapter), [chapter]);
@@ -826,20 +825,20 @@ export function Reader({
   }, [ttsPlaying, ttsPaused, pauseTTS, resumeTTS, goPrev, goNext]);
 
 
-  const isAmoled = readingFilter === "amoled";
+  const isAmoled = themePreference === "amoled";
 
-  const filterClass = readingFilter === "sepia" ? "filter-sepia" :
-    readingFilter === "warm" ? "filter-warm" :
-    readingFilter === "dark-warm" ? "filter-dark-warm" : "";
+  const filterClass = themePreference === "sepia" ? "filter-sepia" :
+    themePreference === "warm" ? "filter-warm" :
+    themePreference === "dark-warm" ? "filter-dark-warm" : "";
 
   const chromeClass =
     isAmoled ? "bg-black" :
-    readingFilter === "sepia" ? "bg-[rgb(245,241,232)] dark:bg-[rgb(30,25,20)]" :
-    readingFilter === "warm" ? "bg-[rgb(255,249,235)] dark:bg-[rgb(35,30,22)]" :
-    readingFilter === "dark-warm" ? "bg-[rgb(240,235,225)] dark:bg-[rgb(25,22,18)]" : "bg-white dark:bg-gray-900";
+    themePreference === "sepia" ? "bg-[rgb(245,241,232)] dark:bg-[rgb(30,25,20)]" :
+    themePreference === "warm" ? "bg-[rgb(255,249,235)] dark:bg-[rgb(35,30,22)]" :
+    themePreference === "dark-warm" ? "bg-[rgb(240,235,225)] dark:bg-[rgb(25,22,18)]" : "bg-white dark:bg-gray-900";
 
   return (
-    <div className={`relative flex h-full flex-col overflow-hidden ${isAmoled ? "dark" : ""}`}>
+    <div className="relative flex h-full flex-col overflow-hidden">
       {/* In-app brightness dim overlay (below sheets/popovers) */}
       {brightness < 1 && (
         <div
@@ -857,7 +856,7 @@ export function Reader({
 
       {/* Navigation bar (visible when controls are shown) */}
       {controlsVisible && (
-        <div className={`absolute top-6 left-0 right-0 z-30 flex items-center justify-center gap-4 border-b border-gray-200 py-1 ${chromeClass}`}>
+        <div className={`absolute top-6 left-0 right-0 z-30 flex items-center justify-center gap-1 border-b border-gray-200 px-2 py-1 ${chromeClass}`}>
           <button
             type="button"
             onClick={() => {
@@ -958,7 +957,7 @@ export function Reader({
           controlsVisible ? "translate-y-0" : "translate-y-full"
         }`}
       >
-        <div className={`flex items-center justify-around border-t border-gray-200 px-2 py-1.5 ${chromeClass}`}>
+        <div className={`flex items-center justify-around border-t border-gray-200 px-3 py-2 pb-safe ${chromeClass}`}>
           {/* Back */}
           <button type="button" onClick={onClose} className="reader-icon-btn" title="Library">
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1169,12 +1168,12 @@ export function Reader({
             </button>
           )}
 
-          {/* Reading filter */}
+          {/* Reading theme (unified with Settings) */}
           <button
             type="button"
             onClick={changeReadingFilter}
-            className={`reader-icon-btn ${readingFilter !== "none" ? "active" : ""}`}
-            title={FILTER_LABEL[readingFilter]}
+            className={`reader-icon-btn ${TINT_THEMES.has(themePreference) ? "active" : ""}`}
+            title={THEME_LABELS[themePreference]}
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
