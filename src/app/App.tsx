@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
+import { StatusBar } from "@capacitor/status-bar";
 import type { BookDocument, LanguageCode } from "../core/types";
 import { parserForFileName } from "../core/books";
 import { Reader } from "../reader/Reader";
@@ -121,7 +122,7 @@ function BottomNav({
     { id: "settings", label: "Settings" },
   ];
   return (
-    <nav className="border-t border-gray-200 bg-white pb-safe dark:border-gray-700 dark:bg-gray-800">
+    <nav className="theme-card border-t pb-safe">
       <div className="grid grid-cols-5">
         {tabs.map((t) => {
           const isActive = view === t.id;
@@ -133,7 +134,7 @@ function BottomNav({
               className={`relative flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium ${
                 isActive
                   ? "text-blue-600 dark:text-blue-400"
-                  : "text-gray-500 dark:text-gray-400"
+                  : "theme-card-muted"
               }`}
             >
               <TabIcon id={t.id} />
@@ -216,6 +217,17 @@ export function App() {
       void getKuromojiTokenizer().catch(() => {});
     }
   }, [hydrated, books]);
+
+  // The status bar is visible on every screen EXCEPT the reader (which
+  // manages its own immersive hide/show). Re-show it whenever we leave the
+  // reader so a hidden bar never leaks into library/dictionary/settings.
+  // Reader immersive behavior itself is untouched.
+  useEffect(() => {
+    if (Capacitor.getPlatform() !== "android") return;
+    if (view !== "reader") {
+      void StatusBar.show().catch(() => {});
+    }
+  }, [view]);
 
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -501,7 +513,7 @@ export function App() {
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value as LibrarySort)}
-                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
+                    className="theme-card theme-card-interactive rounded border px-2 py-1 text-xs"
                   >
                     <option value="recent">Recently read</option>
                     <option value="title">Title</option>
@@ -535,7 +547,7 @@ export function App() {
                         onTouchStart={() => startBookLongPress(book)}
                         onTouchEnd={cancelBookLongPress}
                         onTouchMove={cancelBookLongPress}
-                        className="w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-sm hover:shadow dark:border-gray-700 dark:bg-gray-800"
+                        className="theme-card theme-card-interactive w-full overflow-hidden rounded-lg border text-left shadow-sm hover:shadow"
                       >
                         {/* Cover */}
                         <div className={`aspect-[2/3] bg-gradient-to-br ${LANG_COLORS[book.language] ?? "from-gray-400 to-gray-500"} flex items-center justify-center`}>
@@ -548,9 +560,9 @@ export function App() {
                         <div className="p-3">
                           <div className="truncate font-semibold">{book.title}</div>
                           {book.author && (
-                            <div className="truncate text-xs text-gray-500 dark:text-gray-400">{book.author}</div>
+                            <div className="theme-card-muted truncate text-xs">{book.author}</div>
                           )}
-                          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          <div className="theme-card-muted mt-1 text-xs">
                             {book.language.toUpperCase()} · {book.chapters} chapters
                           </div>
                           {book.stars ? (

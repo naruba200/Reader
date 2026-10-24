@@ -8,6 +8,10 @@ import { packKey } from "../core/dictionary/downloadManager";
 import type { IndexState } from "../core/dictionary/persistentStore";
 import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { EntryCard } from "../reader/EntryCard";
+import { KanjiSection } from "../reader/KanjiSection";
+import { Toast } from "../components/Toast";
+import { ConjugationTable } from "../reader/ConjugationTable";
+import { isKanji } from "../core/language/japanese";
 import { recordLookup } from "../study/history";
 import { saveWord, isWordSaved } from "../study/wordBank";
 
@@ -64,6 +68,71 @@ const LANG_LABEL: Record<LanguageCode, string> = {
 
 const JLPT_LEVELS = ["N5", "N4", "N3", "N2", "N1"] as const;
 
+// Recent searches (query strings that led to opening a result), kept
+// separate from the looked-up-words history below.
+const SEARCH_HISTORY_KEY = "smart-reader-dict-searches";
+function loadSearchHistory(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((q): q is string => typeof q === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function pushSearchHistory(q: string): string[] {
+  const list = loadSearchHistory().filter((x) => x !== q);
+  list.unshift(q);
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list.slice(0, 10)));
+  } catch {
+    /* storage full/unavailable */
+  }
+  return list.slice(0, 10);
+}
+
+// Part-of-speech search filter. JMDict pos is a space-separated code
+// string ("n", "v1", "adj-na", "exp n id"); WordNet pos is a full word
+// ("noun", "verb"). Both shapes are matched here.
+type PosFilter = "noun" | "verb" | "adjective" | "adverb" | "expression";
+const POS_FILTERS: Array<{ id: PosFilter; label: string; jaOnly?: boolean }> = [
+  { id: "noun", label: "Noun" },
+  { id: "verb", label: "Verb" },
+  { id: "adjective", label: "Adjective" },
+  { id: "adverb", label: "Adverb" },
+  { id: "expression", label: "Expression", jaOnly: true },
+];
+function posMatches(pos: string, filter: PosFilter): boolean {
+  const tokens = pos.toLowerCase().split(/\s+/);
+  switch (filter) {
+    case "noun":
+      return tokens.some((t) => t === "n" || t === "noun" || t.startsWith("n-"));
+    case "verb":
+      return tokens.some((t) => t.startsWith("v"));
+    case "adjective":
+      return tokens.some((t) => t.startsWith("adj") || t === "a");
+    case "adverb":
+      return tokens.some((t) => t.startsWith("adv") || t === "r");
+    case "expression":
+      return tokens.some((t) => t === "exp");
+  }
+}
+
+function FilterChip({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+        active
+          ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
+          : "theme-card theme-btn"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 const SOURCE_ICONS: Record<string, string> = {
   JMDict: "📚",
   "KANJIDIC2": "🔤",
@@ -117,6 +186,16 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selected, setSelected] = useState<{ surface: string; entry?: DictionaryEntry } | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
+  // Toast for visible failures (e.g. speaker with no working voice).
+  const [toast, setToast] = useState<string | null>(null);
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => loadSearchHistory());
+  const [wordOfDay, setWordOfDay] = useState<{ word: string; level: string; entry?: DictionaryEntry } | null>(null);
+  const [similar, setSimilar] = useState<SearchResult[]>([]);
+  const [jlptFilter, setJlptFilter] = useState<string | null>(null);
+  const [posFilter, setPosFilter] = useState<PosFilter | null>(null);
+  const [displayResults, setDisplayResults] = useState<SearchResult[]>([]);
+  const [filtering, setFiltering] = useState(false);
+  const [copied, setCopied] = useState(false);
   // Bumps to re-render the "+ Bank" saved state.
   const [, setBankTick] = useState(0);
 
@@ -131,6 +210,34 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
     });
     setBankTick((t) => t + 1);
   }, [selected, language]);
+
+  const copyWord = useCallback(async () => {
+    const text = selected?.entry?.word ?? selected?.surface ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for environments without async clipboard access.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [selected]);
+
+  const canShare =
+    typeof navigator !== "undefined" && typeof navigator.share === "function";
+
+  const shareWord = useCallback(() => {
+    const text = selected?.entry?.word ?? selected?.surface ?? "";
+    if (!text) return;
+    const definition = selected?.entry?.definition;
+    void navigator.share?.({ text: definition ? `${text} — ${definition}` : text });
+  }, [selected]);
 
   // Word list state (when a card is opened)
   const [activeCard, setActiveCard] = useState<CardData | null>(null);
@@ -258,6 +365,102 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
     };
   }, [query, language]);
 
+  // Word of the day: deterministic pick from the JLPT list by day-of-year.
+  useEffect(() => {
+    if (language !== "ja") {
+      setWordOfDay(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const jlpt = await loadJlptWords();
+      const combined: Array<{ word: string; level: string }> = [];
+      for (const level of JLPT_LEVELS) {
+        for (const w of jlpt[level] ?? []) combined.push({ word: w, level });
+      }
+      if (combined.length === 0) return;
+      const now = new Date();
+      const start = new Date(now.getFullYear(), 0, 0);
+      const day = Math.floor((now.getTime() - start.getTime()) / 86400000);
+      const pick = combined[day % combined.length];
+      const store = getDictionaryStore("ja");
+      const entry = await store.lookup(pick.word);
+      if (!cancelled) setWordOfDay({ ...pick, entry });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [language]);
+
+  // Similar words for the open entry: words sharing its first kanji (or,
+  // for kana/English words, starting with the same characters).
+  useEffect(() => {
+    if (!selected) {
+      setSimilar([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const surface = selected.surface;
+      let q: string;
+      if (language === "ja") {
+        const firstKanji = [...surface].find((ch) => isKanji(ch));
+        q = firstKanji ?? surface.charAt(0);
+      } else {
+        q = surface.slice(0, 3);
+      }
+      if (!q) return;
+      const store = getDictionaryStore(language);
+      const found = await store.search(q, 10);
+      if (cancelled) return;
+      setSimilar(
+        found
+          .filter((r) => r.word !== selected.entry?.word && r.word !== surface)
+          .slice(0, 6)
+          .map((r) => ({ word: r.word, reading: r.reading, key: r.key })),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, language]);
+
+  // Apply JLPT + POS filters to the search results. The POS filter needs
+  // a per-result lookup (the index carries no pos), so it shows a
+  // "Filtering…" state while it runs.
+  useEffect(() => {
+    if (!jlptFilter && !posFilter) {
+      setDisplayResults(results);
+      setFiltering(false);
+      return;
+    }
+    let cancelled = false;
+    if (posFilter) setFiltering(true);
+    void (async () => {
+      let out = results;
+      if (jlptFilter) {
+        const jlpt = await loadJlptWords();
+        const set = new Set(jlpt[jlptFilter] ?? []);
+        out = out.filter((r) => set.has(r.word));
+      }
+      if (posFilter) {
+        const store = getDictionaryStore(language);
+        const kept: SearchResult[] = [];
+        for (const r of out) {
+          const entry = await store.lookup(r.word);
+          if (entry?.pos && posMatches(entry.pos, posFilter)) kept.push(r);
+        }
+        out = kept;
+      }
+      if (cancelled) return;
+      setDisplayResults(out);
+      setFiltering(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [results, jlptFilter, posFilter, language]);
+
   const openLookup = useCallback((lang: LanguageCode, word: string) => {
     void (async () => {
       const store = getDictionaryStore(lang);
@@ -275,6 +478,8 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
 
   const openResult = useCallback(
     (word: string, reading?: string) => {
+      const q = query.trim();
+      if (q && q !== word) setSearchHistory(pushSearchHistory(q));
       void (async () => {
         const store = getDictionaryStore(language);
         const entry = await store.lookup(word);
@@ -283,7 +488,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
         recordLookup(word, language);
       })();
     },
-    [language],
+    [language, query],
   );
 
   const switchLanguage = (lang: LanguageCode) => {
@@ -292,6 +497,8 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
     setResults([]);
     setQuery("");
     setActiveCard(null);
+    setJlptFilter(null);
+    setPosFilter(null);
   };
 
   const openCard = (card: CardData) => {
@@ -330,7 +537,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-gray-200 px-3 py-1.5 dark:border-gray-700">
+      <header className="flex items-center gap-2 border-b border-gray-200 px-3 py-1.5 pt-safe dark:border-gray-700">
         <button
           type="button"
           onClick={() => {
@@ -352,7 +559,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
               className={`rounded-lg border px-2.5 py-1 text-[13px] font-medium transition-colors ${
                 language === lang
                   ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
-                  : "border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
+                  : "theme-card theme-btn"
               }`}
             >
               {LANG_LABEL[lang]}
@@ -369,7 +576,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={`Search ${LANG_LABEL[language]}…`}
-            className="flex-1 rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800"
+            className="theme-card flex-1 rounded-xl border px-4 py-2.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           />
           {indexState === "building" && (
             <span className="shrink-0 text-xs text-amber-600 dark:text-amber-400">
@@ -386,31 +593,102 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
         {selected ? (
           /* Entry detail view */
           <div>
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+            <div className="theme-card rounded-2xl border p-4 shadow-sm">
               <EntryCard
                 word={selected.surface}
                 entry={selected.entry}
                 wordSaved={isWordSaved(selected.surface, language)}
                 onSaveWord={saveSelectedWord}
+                onSpeakError={(msg) => setToast(msg)}
               />
+            </div>
+            {language === "ja" && <KanjiSection word={selected.surface} />}
+            {similar.length > 0 && (
+              <div className="mt-4">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                  Similar words
+                </h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {similar.map((r) => (
+                    <button
+                      key={r.key}
+                      type="button"
+                      onClick={() => openLookup(language, r.word)}
+                      className="theme-card theme-card-interactive rounded-full border px-3 py-1.5 text-[13px] shadow-sm transition-all active:scale-95"
+                    >
+                      {r.word}
+                      {r.reading && r.reading !== r.word && (
+                        <span className="ml-1 text-xs text-gray-400">{r.reading}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <ConjugationTable word={selected.entry?.word ?? selected.surface} pos={selected.entry?.pos} />
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => void copyWord()}
+                className="theme-card theme-btn rounded-full border px-3 py-1.5 text-xs font-medium"
+              >
+                {copied ? "Copied ✓" : "Copy word"}
+              </button>
+              {canShare && (
+                <button
+                  type="button"
+                  onClick={() => void shareWord()}
+                  className="theme-card theme-btn rounded-full border px-3 py-1.5 text-xs font-medium"
+                >
+                  Share
+                </button>
+              )}
             </div>
           </div>
         ) : query.trim() ? (
           /* Search results */
           <div>
-            <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-              {results.length} result{results.length === 1 ? "" : "s"}
+            {language === "ja" && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                <FilterChip active={jlptFilter === null} onClick={() => setJlptFilter(null)} label="All levels" />
+                {JLPT_LEVELS.map((level) => (
+                  <FilterChip
+                    key={level}
+                    active={jlptFilter === level}
+                    onClick={() => setJlptFilter(jlptFilter === level ? null : level)}
+                    label={level}
+                  />
+                ))}
+              </div>
+            )}
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              <FilterChip active={posFilter === null} onClick={() => setPosFilter(null)} label="All types" />
+              {POS_FILTERS.filter((f) => !f.jaOnly || language === "ja").map((f) => (
+                <FilterChip
+                  key={f.id}
+                  active={posFilter === f.id}
+                  onClick={() => setPosFilter(posFilter === f.id ? null : f.id)}
+                  label={f.label}
+                />
+              ))}
             </div>
-            {results.length === 0 ? (
-              <p className="text-sm text-gray-400">No matches.</p>
+            <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+              {filtering
+                ? "Filtering…"
+                : `${displayResults.length} result${displayResults.length === 1 ? "" : "s"}`}
+            </div>
+            {displayResults.length === 0 ? (
+              <p className="text-sm text-gray-400">
+                {jlptFilter || posFilter ? "No matches for these filters." : "No matches."}
+              </p>
             ) : (
               <ul className="divide-y divide-gray-100 dark:divide-gray-800">
-                {results.map((r) => (
+                {displayResults.map((r) => (
                   <li key={r.key}>
                     <button
                       type="button"
                       onClick={() => openResult(r.word, r.reading)}
-                      className="w-full rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-gray-800/60 dark:active:bg-gray-700/60"
+                      className="w-full rounded-xl px-2 py-2 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-gray-800/60 dark:active:bg-gray-700/60"
                     >
                       <span className="text-base font-medium">{r.word}</span>
                       {r.reading && r.reading !== r.word && (
@@ -451,7 +729,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                           setSelected({ surface: entry.word, entry });
                           setHistory(pushHistory({ language, word: entry.word, at: Date.now() }));
                         }}
-                        className="w-full rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-gray-800/60 dark:active:bg-gray-700/60"
+                        className="w-full rounded-xl px-2 py-2 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-gray-800/60 dark:active:bg-gray-700/60"
                       >
                         <div className="flex items-baseline gap-2">
                           <span className="text-base font-medium">{entry.word}</span>
@@ -500,7 +778,30 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
           </div>
         ) : (
           /* Category cards home */
-          <div className="space-y-5">
+          <div className="space-y-4">
+            {/* Word of the day */}
+            {wordOfDay && (
+              <section>
+                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Word of the day</h2>
+                <button
+                  type="button"
+                  onClick={() => openLookup(language, wordOfDay.word)}
+                  className="theme-card theme-card-interactive w-full rounded-2xl border p-4 text-left shadow-sm transition-all active:scale-[0.98]"
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-bold tracking-tight">{wordOfDay.word}</span>
+                    <span className="text-xs theme-card-muted">JLPT {wordOfDay.level}</span>
+                  </div>
+                  {wordOfDay.entry?.readings?.[0] && wordOfDay.entry.readings[0] !== wordOfDay.word && (
+                    <div className="text-sm theme-card-muted">{wordOfDay.entry.readings[0]}</div>
+                  )}
+                  {wordOfDay.entry?.definition && (
+                    <div className="mt-1 text-sm line-clamp-2">{wordOfDay.entry.definition}</div>
+                  )}
+                </button>
+              </section>
+            )}
+
             {/* JLPT Level cards */}
             {language === "ja" && (
               <section>
@@ -514,8 +815,8 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                       onClick={() => openCard({ type: "jlpt", level })}
                       className={`rounded-2xl border p-3 text-center transition-all active:scale-95 ${
                         jmdictInstalled
-                          ? "border-gray-200 bg-white shadow-sm hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
-                          : "cursor-not-allowed border-gray-100 bg-gray-50 opacity-50 dark:border-gray-800 dark:bg-gray-900"
+                          ? "theme-card theme-card-interactive shadow-sm hover:shadow-md"
+                          : "theme-card cursor-not-allowed opacity-50"
                       }`}
                     >
                       <div className="text-lg font-bold tracking-tight">{level}</div>
@@ -542,7 +843,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                     key={card.source}
                     type="button"
                     onClick={() => openCard(card)}
-                    className="rounded-2xl border border-gray-200 bg-white p-3 text-left shadow-sm transition-all hover:shadow-md active:scale-[0.98] dark:border-gray-700 dark:bg-gray-800"
+                    className="theme-card theme-card-interactive rounded-2xl border p-3 text-left shadow-sm transition-all hover:shadow-md active:scale-[0.98]"
                   >
                     <div className="text-2xl">{card.icon}</div>
                     <div className="mt-1 text-sm font-medium tracking-tight">{card.label}</div>
@@ -550,6 +851,25 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                 ))}
               </div>
             </section>
+
+            {/* Recent searches */}
+            {searchHistory.length > 0 && (
+              <section>
+                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Recent searches</h2>
+                <div className="flex flex-wrap gap-1.5">
+                  {searchHistory.map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => setQuery(q)}
+                      className="theme-card theme-card-interactive rounded-full border px-3 py-1.5 text-[13px] shadow-sm transition-all active:scale-95"
+                    >
+                      🔍 {q}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {/* Recently looked up */}
             {history.length > 0 && (
@@ -561,7 +881,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                       key={`${h.language}:${h.word}:${i}`}
                       type="button"
                       onClick={() => openLookup(h.language, h.word)}
-                      className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[13px] shadow-sm transition-all hover:bg-gray-50 active:scale-95 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+                      className="theme-card theme-card-interactive rounded-full border px-3 py-1.5 text-[13px] shadow-sm transition-all active:scale-95"
                     >
                       {h.word}
                       <span className="ml-1 text-xs text-gray-400">{LANG_LABEL[h.language]}</span>
@@ -573,6 +893,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
           </div>
         )}
       </div>
+      {toast && <Toast message={toast} onDone={() => setToast(null)} />}
     </div>
   );
 }
