@@ -1068,8 +1068,8 @@ export function Reader({
               )}
             </button>
             {showVoiceSelector && (
-              <div className={`absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800 z-50`}>
-                <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Engine</div>
+              <div className={`theme-card absolute bottom-full left-0 mb-2 w-56 rounded-lg border p-2 shadow-lg z-50`}>
+                <div className="mb-1 text-xs font-semibold theme-card-muted">Engine</div>
                 <div className="mb-2 flex gap-1">
                   {getAllEngines().map((e) => (
                     <button
@@ -1079,7 +1079,7 @@ export function Reader({
                       className={`flex-1 rounded px-2 py-1 text-xs font-medium ${
                         ttsEngineId === e.id
                           ? "bg-blue-500 text-white"
-                          : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                          : "theme-chip theme-card-interactive"
                       }`}
                     >
                       {e.name}
@@ -1087,8 +1087,8 @@ export function Reader({
                   ))}
                 </div>
                 <div className="mb-1 flex items-baseline justify-between">
-                  <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Speed</span>
-                  <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{ttsRate.toFixed(1)}×</span>
+                  <span className="text-xs font-semibold theme-card-muted">Speed</span>
+                  <span className="text-xs tabular-nums theme-card-muted">{ttsRate.toFixed(1)}×</span>
                 </div>
                 <input
                   type="range"
@@ -1100,7 +1100,7 @@ export function Reader({
                   className="mb-2 w-full accent-blue-600"
                   aria-label="Speech speed"
                 />
-                <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Sleep timer</div>
+                <div className="mb-1 text-xs font-semibold theme-card-muted">Sleep timer</div>
                 <div className="mb-2 flex flex-wrap gap-1">
                   {[0, 5, 10, 15, 30, 60].map((m) => (
                     <button
@@ -1110,14 +1110,14 @@ export function Reader({
                       className={`rounded px-2 py-1 text-xs font-medium ${
                         sleepMinutes === m
                           ? "bg-blue-500 text-white"
-                          : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                          : "theme-chip theme-card-interactive"
                       }`}
                     >
                       {m === 0 ? "Off" : `${m}m`}
                     </button>
                   ))}
                 </div>
-                <div className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">Voice</div>
+                <div className="mb-1 text-xs font-semibold theme-card-muted">Voice</div>
                 <div className="max-h-40 overflow-y-auto custom-scrollbar">
                   {ttsVoices.length === 0 ? (
                     <p className="text-xs text-gray-400 py-1">No voices for this language</p>
@@ -1194,12 +1194,12 @@ export function Reader({
 
       {/* Chapter full-screen overlay */}
       {showChapterSelect && (
-        <div className="absolute inset-0 z-50 flex flex-col bg-white dark:bg-gray-900">
-          <div className="flex items-center border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+        <div className="theme-card absolute inset-0 z-50 flex flex-col">
+          <div className="theme-divider flex items-center border-b px-4 py-3">
             <button
               type="button"
               onClick={() => setShowChapterSelect(false)}
-              className="rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="theme-hover rounded px-2 py-1 text-sm"
             >
               ← Back
             </button>
@@ -1215,12 +1215,12 @@ export function Reader({
                   setPageIndex(0);
                   setShowChapterSelect(false);
                 }}
-                className={`w-full border-b border-gray-100 px-4 py-3 text-left hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-gray-800/50 ${
+                className={`theme-divider theme-hover w-full border-b px-4 py-3 text-left ${
                   i === chapterIndex ? "bg-blue-50 dark:bg-blue-900/20" : ""
                 }`}
               >
                 <div className="text-sm font-medium">{ch.title}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">
+                <div className="text-xs theme-card-muted">
                   Chapter {i + 1} of {book.chapters.length}
                 </div>
               </button>

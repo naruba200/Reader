@@ -1,5 +1,12 @@
 import { useState } from "react";
 import type { DictionaryEntry, Level } from "../core/types";
+import {
+  getActiveEngine,
+  getActiveRate,
+  getActiveVoiceId,
+  getAllEngines,
+  getVoicesForLanguage,
+} from "../core/tts";
 
 export interface EntryCardProps {
   /** Surface word (e.g. the clicked token). Defaults to `entry.word`. */
@@ -11,6 +18,9 @@ export interface EntryCardProps {
   /** Save-to-word-bank handler; when provided a "+ Bank" button is shown. */
   onSaveWord?: () => void;
   wordSaved?: boolean;
+  /** Called when speaking fails (e.g. so the host page can show a toast).
+      When absent, the failure is shown inline under the buttons. */
+  onSpeakError?: (message: string) => void;
 }
 
 const LEVEL_BADGE: Partial<Record<Level, string>> = {
@@ -32,6 +42,33 @@ function langForLevel(level: Level | undefined): string {
   return "en-US";
 }
 
+const JAPANESE_RE = /[\u3040-\u30FF\u4E00-\u9FFF]/;
+
+/**
+ * JMDict examples arrive as Japanese/English pairs (sentence, then its
+ * translation); WordNet examples are single English sentences. Group
+ * consecutive JP→EN pairs so the translation renders muted under its
+ * sentence instead of as a flat mixed list.
+ */
+function pairExamples(examples: string[]): Array<{ jp: string; en?: string }> {
+  const pairs: Array<{ jp: string; en?: string }> = [];
+  for (let i = 0; i < examples.length; i++) {
+    const cur = examples[i];
+    const next = examples[i + 1];
+    if (
+      next !== undefined &&
+      JAPANESE_RE.test(cur) &&
+      !JAPANESE_RE.test(next)
+    ) {
+      pairs.push({ jp: cur, en: next });
+      i++;
+    } else {
+      pairs.push({ jp: cur });
+    }
+  }
+  return pairs;
+}
+
 /** Shared rendering of a dictionary entry used by both the popover and the dictionary page. */
 export function EntryCard({
   word,
@@ -41,65 +78,73 @@ export function EntryCard({
   onOpenInDictionary,
   onSaveWord,
   wordSaved,
+  onSpeakError,
 }: EntryCardProps) {
   const [played, setPlayed] = useState(false);
-  const [readingDef, setReadingDef] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [speakError, setSpeakError] = useState(false);
   const surface = word ?? entry?.word ?? "";
   const levelText = level && level !== "UNKNOWN" ? level : undefined;
 
-  const speech = () => {
-    if (typeof speechSynthesis === "undefined") return;
-    const utter = new SpeechSynthesisUtterance(surface);
-    utter.lang = langForLevel(level);
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utter);
-    setPlayed(true);
-  };
-
-  const speakDefinition = () => {
-    if (typeof speechSynthesis === "undefined" || !entry?.definition) return;
-    speechSynthesis.cancel();
-    const parts: string[] = [];
-    if (entry.readings && entry.readings.length > 0) {
-      parts.push(entry.readings.join(", "));
-    }
-    parts.push(entry.definition);
-    if (entry.examples) {
-      for (const ex of entry.examples.slice(0, 2)) {
-        parts.push(ex);
+  // Speak through the app's TTS engine (active first, then every other
+  // engine), NOT raw browser speechSynthesis — that engine is silent on
+  // Android WebView, which is why the speaker icon used to do nothing.
+  // The voice is matched to the word's language: the saved voice is used
+  // only when it actually speaks that language, otherwise the first voice
+  // for the language on that engine.
+  const speak = async () => {
+    if (speaking || !surface) return;
+    setSpeakError(false);
+    const lang = langForLevel(level);
+    const langPrefix = lang.split("-")[0];
+    const active = getActiveEngine();
+    const engines = [active, ...getAllEngines().filter((e) => e.id !== active.id)];
+    const voicesForLang = getVoicesForLanguage(langPrefix);
+    const savedId = getActiveVoiceId();
+    setSpeaking(true);
+    let spoken = false;
+    for (const engine of engines) {
+      const savedMatchesLang =
+        savedId != null &&
+        voicesForLang.some((v) => v.id === savedId && v.engine === engine.id);
+      const voiceId = savedMatchesLang
+        ? savedId
+        : voicesForLang.find((v) => v.engine === engine.id)?.id;
+      try {
+        await engine.speak(surface, voiceId, getActiveRate());
+        spoken = true;
+        break;
+      } catch (err) {
+        console.warn(`TTS engine "${engine.id}" failed, trying next`, err);
       }
     }
-    const utter = new SpeechSynthesisUtterance(parts.join(". "));
-    utter.lang = langForLevel(level);
-    utter.rate = 0.9;
-    speechSynthesis.speak(utter);
-    setReadingDef(true);
-    utter.onend = () => setReadingDef(false);
-  };
-
-  const stopReadingDef = () => {
-    if (typeof speechSynthesis === "undefined") return;
-    speechSynthesis.cancel();
-    setReadingDef(false);
+    setSpeaking(false);
+    if (spoken) {
+      setPlayed(true);
+    } else {
+      setSpeakError(true);
+      onSpeakError?.("Couldn't play audio — no working voice on this device");
+    }
   };
 
   return (
     <div>
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-lg font-semibold">{surface}</div>
-          {entry?.ipa && <div className="text-sm text-gray-500 dark:text-gray-400">{entry.ipa}</div>}
+        <div className="min-w-0">
+          <div className="text-2xl font-bold tracking-tight break-words">{surface}</div>
+          {entry?.ipa && <div className="text-sm theme-card-muted">{entry.ipa}</div>}
           {entry?.readings && entry.readings.length > 0 && (
-            <div className="text-sm text-gray-500 dark:text-gray-400">
+            <div className="text-sm theme-card-muted">
               {entry.readings.join(" · ")}
             </div>
           )}
         </div>
-        <div className="flex gap-1">
+        <div className="flex shrink-0 gap-1">
           <button
             type="button"
-            onClick={speech}
-            className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+            onClick={() => void speak()}
+            disabled={speaking}
+            className="theme-card theme-btn rounded border px-2 py-1 text-xs disabled:opacity-50"
             aria-label="Play pronunciation"
           >
             {played ? "🔊" : "🔈"}
@@ -111,34 +156,25 @@ export function EntryCard({
               className={`rounded border px-2 py-1 text-xs font-medium ${
                 wordSaved
                   ? "border-green-400 bg-green-50 text-green-700 dark:border-green-600 dark:bg-green-900/40 dark:text-green-300"
-                  : "border-gray-300 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+                  : "theme-card theme-btn"
               }`}
               aria-label={wordSaved ? "Saved to word bank" : "Save to word bank"}
             >
               {wordSaved ? "✓ Bank" : "+ Bank"}
             </button>
           )}
-          {entry?.definition && (
-            <button
-              type="button"
-              onClick={readingDef ? stopReadingDef : speakDefinition}
-              className={`rounded border px-2 py-1 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 ${
-                readingDef
-                  ? "border-blue-400 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-900/40 dark:text-blue-300"
-                  : "border-gray-300 dark:border-gray-600"
-              }`}
-              aria-label={readingDef ? "Stop reading definition" : "Read definition aloud"}
-            >
-              {readingDef ? "⏹" : "📖"}
-            </button>
-          )}
         </div>
       </div>
+      {speakError && (
+        <p className="mt-1 text-xs text-red-400">
+          Couldn&apos;t play audio — no working voice on this device
+        </p>
+      )}
 
       <div className="mt-2 flex flex-wrap gap-2 text-xs">
         {levelText && (
           <span
-            className={`rounded px-1.5 py-0.5 ${level ? (LEVEL_BADGE[level] ?? "bg-gray-100 dark:bg-gray-700") : "bg-gray-100 dark:bg-gray-700"}`}
+            className={`rounded px-1.5 py-0.5 ${level ? (LEVEL_BADGE[level] ?? "theme-chip") : "theme-chip"}`}
           >
             {levelText}
           </span>
@@ -149,24 +185,35 @@ export function EntryCard({
           </span>
         )}
         {entry?.source && (
-          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+          <span className="theme-chip rounded px-1.5 py-0.5">
             {entry.source}
           </span>
         )}
       </div>
 
-      <p className="mt-2 text-sm leading-snug">
-        {entry?.definition ?? "No dictionary entry available for this word."}
-      </p>
+      <div className="mt-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wider theme-card-muted">
+          Meaning
+        </div>
+        <p className="mt-0.5 text-[15px] leading-relaxed">
+          {entry?.definition ?? "No dictionary entry available for this word."}
+        </p>
+      </div>
 
       {entry?.examples && entry.examples.length > 0 && (
-        <ul className="mt-2 space-y-1 text-sm text-gray-600 dark:text-gray-300">
-          {entry.examples.slice(0, 3).map((ex, i) => (
-            <li key={i} className="border-l-2 border-gray-200 pl-2 dark:border-gray-700">
-              {ex}
-            </li>
-          ))}
-        </ul>
+        <div className="mt-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wider theme-card-muted">
+            Examples
+          </div>
+          <ul className="mt-1 space-y-2 text-sm">
+            {pairExamples(entry.examples).slice(0, 2).map((pair, i) => (
+              <li key={i} className="theme-divider border-l-2 pl-2">
+                <div>{pair.jp}</div>
+                {pair.en && <div className="text-xs theme-card-muted">{pair.en}</div>}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <div className="mt-3 flex items-center gap-3">
@@ -183,7 +230,7 @@ export function EntryCard({
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            className="ml-auto text-xs text-gray-400 hover:text-white"
           >
             Close (Esc)
           </button>
