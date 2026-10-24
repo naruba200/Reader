@@ -87,7 +87,7 @@ export function DownloadsPage({ onBack, onOpenWord }: DownloadsPageProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 dark:border-gray-700">
+      <header className="flex items-center gap-3 border-b border-gray-200 px-4 py-2 pt-safe dark:border-gray-700">
         <button
           type="button"
           onClick={onBack}
@@ -105,7 +105,7 @@ export function DownloadsPage({ onBack, onOpenWord }: DownloadsPageProps) {
               className={`rounded border px-2 py-1 text-sm ${
                 language === lang
                   ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
-                  : "border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
+                  : "theme-card theme-btn"
               }`}
             >
               {LANG_LABEL[lang]}
@@ -152,7 +152,7 @@ export function DownloadsPage({ onBack, onOpenWord }: DownloadsPageProps) {
                   key={`${h.language}:${h.word}:${i}`}
                   type="button"
                   onClick={() => onOpenWord?.(h.language, h.word)}
-                  className="rounded-full border border-gray-300 bg-white px-3 py-1 text-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700"
+                  className="theme-card theme-card-interactive rounded-full border px-3 py-1 text-sm"
                 >
                   {h.word}
                   <span className="ml-1 text-xs text-gray-400">{LANG_LABEL[h.language]}</span>
@@ -199,7 +199,7 @@ function PackCard({
   const status = prog ? "Downloading" : paused ? "Paused" : info ? "Installed" : "Not installed";
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+    <div className="theme-card rounded-lg border p-3 shadow-sm">
       <div className="flex items-center gap-2">
         {info && priorityCount > 1 && (
           <span className="flex gap-1">

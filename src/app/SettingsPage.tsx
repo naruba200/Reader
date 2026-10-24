@@ -61,21 +61,21 @@ export function SettingsPage({
   };
 
   return (
-    <main className="min-h-0 flex-1 overflow-y-auto p-4">
+    <main className="min-h-0 flex-1 overflow-y-auto p-4 pt-safe">
       <h1 className="mb-4 text-xl font-bold">Settings</h1>
 
       <section className="mb-6">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Appearance
         </h2>
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="theme-card overflow-hidden rounded-xl border">
           <div className="flex items-center justify-between px-4 py-3">
             <span className="font-medium">Theme</span>
             <select
               value={preference}
               onChange={(e) => setThemePreference(e.target.value as (typeof THEME_OPTIONS)[number]["id"])}
               aria-label="Theme"
-              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+              className="theme-card rounded-lg border px-3 py-1.5 text-sm font-medium focus:border-blue-500 focus:outline-none"
             >
               {THEME_OPTIONS.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -84,10 +84,10 @@ export function SettingsPage({
               ))}
             </select>
           </div>
-          <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 dark:border-gray-700">
+          <div className="flex items-center justify-between gap-3 theme-divider border-t px-4 py-3">
             <span>
               <span className="block font-medium">Follow system font size</span>
-              <span className="block text-sm text-gray-500 dark:text-gray-400">
+              <span className="block text-sm theme-card-muted">
                 Scale reader text with your device&apos;s text size setting
               </span>
             </span>
@@ -115,7 +115,7 @@ export function SettingsPage({
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Library
         </h2>
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="theme-card overflow-hidden rounded-xl border">
           <div className="flex items-center justify-between px-4 py-3">
             <span className="font-medium">View</span>
             <div className="flex overflow-hidden rounded-lg border border-gray-300 dark:border-gray-600">
@@ -127,7 +127,7 @@ export function SettingsPage({
                   className={`px-4 py-1.5 text-sm font-medium capitalize ${
                     viewMode === m
                       ? "bg-blue-600 text-white"
-                      : "text-gray-600 dark:text-gray-300"
+                      : "theme-card-muted"
                   }`}
                 >
                   {m}
@@ -142,11 +142,11 @@ export function SettingsPage({
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Reading
         </h2>
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="theme-card overflow-hidden rounded-xl border">
           <div className="px-4 py-3">
             <div className="flex items-baseline justify-between">
               <span className="font-medium">Today</span>
-              <span className="text-sm tabular-nums text-gray-500 dark:text-gray-400">
+              <span className="text-sm tabular-nums theme-card-muted">
                 {formatDuration(todayMs)} / {stats.goalMin}m
               </span>
             </div>
@@ -157,22 +157,22 @@ export function SettingsPage({
               />
             </div>
           </div>
-          <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 dark:border-gray-700">
+          <div className="flex items-center justify-between theme-divider border-t px-4 py-3">
             <span className="font-medium">Day streak</span>
             <span className="text-sm">
               {stats.streak > 0 ? `🔥 ${stats.streak} day${stats.streak !== 1 ? "s" : ""}` : "—"}
             </span>
           </div>
-          <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 dark:border-gray-700">
+          <div className="flex items-center justify-between theme-divider border-t px-4 py-3">
             <span className="font-medium">Total reading time</span>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+            <span className="text-sm theme-card-muted">
               {formatDuration(stats.totalMs)}
             </span>
           </div>
-          <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-700">
+          <div className="theme-divider border-t px-4 py-3">
             <div className="flex items-baseline justify-between">
               <span className="font-medium">Daily goal</span>
-              <span className="text-sm tabular-nums text-gray-500 dark:text-gray-400">
+              <span className="text-sm tabular-nums theme-card-muted">
                 {stats.goalMin} min
               </span>
             </div>
@@ -194,20 +194,20 @@ export function SettingsPage({
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Storage
         </h2>
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="theme-card overflow-hidden rounded-xl border">
           <div className="flex items-center justify-between px-4 py-3">
             <span className="font-medium">Books</span>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+            <span className="text-sm theme-card-muted">
               {bookCount === null ? "…" : bookCount}
             </span>
           </div>
-          <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 dark:border-gray-700">
+          <div className="flex items-center justify-between theme-divider border-t px-4 py-3">
             <span className="font-medium">Word bank</span>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+            <span className="text-sm theme-card-muted">
               {wordCount} word{wordCount !== 1 ? "s" : ""}
             </span>
           </div>
-          <div className="flex gap-2 border-t border-gray-100 px-4 py-3 dark:border-gray-700">
+          <div className="flex gap-2 theme-divider border-t px-4 py-3">
             <button
               type="button"
               onClick={doExport}
@@ -226,11 +226,11 @@ export function SettingsPage({
             </label>
           </div>
           {backupMsg && (
-            <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+            <p className="theme-divider border-t px-4 py-2 text-xs theme-card-muted">
               {backupMsg}
             </p>
           )}
-          <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-400 dark:border-gray-700">
+          <p className="theme-divider border-t px-4 py-2 text-xs theme-card-muted">
             Backs up library data, reading progress, settings, reading stats and your word bank.
             Book files themselves are not included — re-import them after a restore.
           </p>

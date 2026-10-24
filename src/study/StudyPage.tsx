@@ -120,12 +120,12 @@ export function StudyPage() {
                 <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
                   Card {cardIndex + 1} of {dueCards.length}
                 </p>
-                <div className="rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm dark:border-gray-700 dark:bg-gray-800">
+                <div className="theme-card rounded-2xl border p-6 text-center shadow-sm">
                   <p className="text-3xl font-bold">{current.word}</p>
                   {showAnswer ? (
                     <div className="mt-4 space-y-2 text-left">
                       {current.reading && (
-                        <p className="text-lg text-gray-600 dark:text-gray-300">{current.reading}</p>
+                        <p className="text-lg theme-card-muted">{current.reading}</p>
                       )}
                       {current.definition && <p className="text-sm">{current.definition}</p>}
                       {current.sentence && (
