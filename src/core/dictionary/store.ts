@@ -41,7 +41,8 @@ export function recordsFor(
 
 /** Persistent lookup store for dictionary entries keyed by normalized word. */
 export interface DictionaryStore {
-  lookup(word: string): Promise<DictionaryEntry | undefined>;
+  /** When `source` is given, only that pack's entry is returned. */
+  lookup(word: string, source?: string): Promise<DictionaryEntry | undefined>;
   put(entry: DictionaryEntry): Promise<void>;
   bulkPut(entries: Iterable<DictionaryEntry>): Promise<void>;
   size(): Promise<number>;
@@ -57,7 +58,9 @@ export class MemoryDictionaryStore implements DictionaryStore {
     this.language = language;
   }
 
-  async lookup(word: string): Promise<DictionaryEntry | undefined> {
+  async lookup(word: string, _source?: string): Promise<DictionaryEntry | undefined> {
+    // The in-memory store holds one entry per key and has no source
+    // separation; the parameter exists only to satisfy the interface.
     return this.map.get(normalizeKey(word, this.language));
   }
 

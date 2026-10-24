@@ -52,7 +52,7 @@ function ToggleRow({
         <span className="block text-sm font-medium text-gray-700 dark:text-gray-200">
           {title}
         </span>
-        <span className="block text-xs text-gray-500 dark:text-gray-400">
+        <span className="block text-xs theme-card-muted">
           {subtitle}
         </span>
       </span>
@@ -92,7 +92,7 @@ function SliderRow({
     <div className="py-2">
       <div className="flex items-baseline justify-between">
         <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{label}</span>
-        <span className="text-sm tabular-nums text-gray-500 dark:text-gray-400">{display}</span>
+        <span className="text-sm tabular-nums theme-card-muted">{display}</span>
       </div>
       <input
         type="range"
@@ -132,10 +132,10 @@ export function ReadingSettingsPanel({
         role="dialog"
         aria-modal="true"
         aria-label="Reading settings"
-        className="sheet-enter relative max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-4 pb-safe dark:bg-gray-800"
+        className="theme-card sheet-enter relative max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl p-4 pb-safe"
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+        <h2 className="text-base font-semibold">
           Reading settings
         </h2>
 
@@ -160,7 +160,7 @@ export function ReadingSettingsPanel({
                 className={`rounded-lg border px-2 py-2 text-xs font-medium ${
                   settings.typeface === t
                     ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
-                    : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                    : "theme-card theme-btn theme-card-muted"
                 }`}
               >
                 {TYPEFACE_LABELS[t]}
@@ -180,14 +180,14 @@ export function ReadingSettingsPanel({
                 className={`rounded-lg border px-2 py-2 text-xs font-medium ${
                   settings.viewMode === m.id
                     ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
-                    : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                    : "theme-card theme-btn theme-card-muted"
                 }`}
               >
                 {m.label}
               </button>
             ))}
           </div>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          <p className="mt-1 text-xs theme-card-muted">
             Scroll shows the whole chapter as one continuous page.
           </p>
         </div>
@@ -238,7 +238,7 @@ export function ReadingSettingsPanel({
             <span className="block text-sm font-medium text-gray-700 dark:text-gray-200">
               Keep screen awake
             </span>
-            <span className="block text-xs text-gray-500 dark:text-gray-400">
+            <span className="block text-xs theme-card-muted">
               Prevents the screen from sleeping while reading
             </span>
           </span>

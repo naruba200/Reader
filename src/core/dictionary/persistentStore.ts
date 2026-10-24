@@ -46,9 +46,14 @@ export class PersistentDictionaryStore implements DictionaryStore {
     for (const fn of this.indexStateListeners) fn(state);
   }
 
-  async lookup(word: string): Promise<DictionaryEntry | undefined> {
+  async lookup(word: string, source?: string): Promise<DictionaryEntry | undefined> {
     const key = normalizeKey(word, this.language);
     if (!key) return undefined;
+    if (source) {
+      // Source-pinned lookup (e.g. KANJIDIC2 for a single kanji): the
+      // overlay holds user/bundled entries, never pack entries.
+      return this.backend.lookup(key, source);
+    }
     const backend = await this.backend.lookup(key);
     if (backend) return backend;
     return this.overlay.lookup(key);

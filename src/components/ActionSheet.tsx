@@ -39,12 +39,12 @@ export function ActionSheet({ open, title, message, actions, onClose }: ActionSh
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="sheet-enter relative w-full max-w-md rounded-t-2xl bg-white p-4 pb-safe dark:bg-gray-800"
+        className="theme-card sheet-enter relative w-full max-w-md rounded-t-2xl p-4 pb-safe"
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
+        <h2 className="text-base font-semibold">{title}</h2>
         {message && (
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{message}</p>
+          <p className="mt-1 text-sm theme-card-muted">{message}</p>
         )}
         <div className="mt-4 flex flex-col gap-2">
           {actions.map((a) => (
@@ -58,7 +58,7 @@ export function ActionSheet({ open, title, message, actions, onClose }: ActionSh
               className={`w-full rounded-xl px-4 py-3 text-base font-medium active:scale-[0.99] ${
                 a.destructive
                   ? "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300"
-                  : "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100"
+                  : "theme-chip"
               }`}
             >
               {a.label}
@@ -67,7 +67,7 @@ export function ActionSheet({ open, title, message, actions, onClose }: ActionSh
           <button
             type="button"
             onClick={onClose}
-            className="w-full rounded-xl px-4 py-3 text-base font-medium text-gray-500 dark:text-gray-400"
+            className="w-full rounded-xl px-4 py-3 text-base font-medium theme-card-muted"
           >
             Cancel
           </button>

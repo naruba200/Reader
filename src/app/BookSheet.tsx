@@ -101,7 +101,7 @@ export function BookSheet({
         role="dialog"
         aria-modal="true"
         aria-label={book.title}
-        className="sheet-enter relative max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-4 pb-safe dark:bg-gray-800"
+        className="theme-card sheet-enter relative max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl p-4 pb-safe"
       >
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-gray-300 dark:bg-gray-600" />
         <div className="pr-8">
@@ -116,7 +116,7 @@ export function BookSheet({
             onBlur={commitTitleAuthor}
             onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
             aria-label="Book title"
-            className="w-full rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-base font-semibold text-gray-900 hover:border-gray-300 focus:border-blue-500 focus:bg-white focus:outline-none dark:text-gray-100 dark:hover:border-gray-600 dark:focus:bg-gray-700"
+            className="w-full rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-base font-semibold hover:border-gray-300 focus:border-blue-500 focus:outline-none dark:hover:border-gray-600"
           />
           <label htmlFor="booksheet-author" className="sr-only">
             Book author
@@ -130,7 +130,7 @@ export function BookSheet({
             onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
             aria-label="Book author"
             placeholder="Author"
-            className="mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-sm text-gray-500 placeholder:text-gray-400 hover:border-gray-300 focus:border-blue-500 focus:bg-white focus:outline-none dark:text-gray-400 dark:hover:border-gray-600 dark:focus:bg-gray-700"
+            className="theme-card-muted mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-sm placeholder:text-gray-400 hover:border-gray-300 focus:border-blue-500 focus:outline-none dark:hover:border-gray-600"
           />
         </div>
         <p className="mt-1 text-xs text-gray-400">
@@ -139,7 +139,7 @@ export function BookSheet({
         </p>
 
         <div className="mt-4">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Status</span>
+          <span className="text-sm font-medium">Status</span>
           <div className="mt-1 grid grid-cols-4 gap-1">
             {STATUS_OPTIONS.map((s) => (
               <button
@@ -149,7 +149,7 @@ export function BookSheet({
                 className={`rounded-lg border px-1 py-2 text-xs font-medium ${
                   (book.status ?? "none") === s.id
                     ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
-                    : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                    : "theme-card theme-btn theme-card-muted"
                 }`}
               >
                 {s.label}
@@ -159,7 +159,7 @@ export function BookSheet({
         </div>
 
         <div className="mt-4">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Rating</span>
+          <span className="text-sm font-medium">Rating</span>
           <div className="mt-1 flex gap-1">
             {[1, 2, 3, 4, 5].map((n) => (
               <button
@@ -178,7 +178,7 @@ export function BookSheet({
         </div>
 
         <div className="mt-4">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Tags</span>
+          <span className="text-sm font-medium">Tags</span>
           <div className="mt-1 flex gap-2">
             <input
               type="text"
@@ -186,7 +186,7 @@ export function BookSheet({
               onChange={(e) => setTagInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") addTag(); }}
               placeholder="Add a tag…"
-              className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700"
+              className="theme-card min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm"
             />
             <button
               type="button"
@@ -201,7 +201,7 @@ export function BookSheet({
               {book.tags!.map((t) => (
                 <span
                   key={t}
-                  className="flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-xs dark:bg-gray-700"
+                  className="theme-chip flex items-center gap-1 rounded-full px-2.5 py-1 text-xs"
                 >
                   {t}
                   <button
@@ -221,7 +221,7 @@ export function BookSheet({
         <button
           type="button"
           onClick={onClose}
-          className="mt-5 w-full rounded-xl bg-gray-100 px-4 py-3 text-base font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+          className="theme-chip theme-card-interactive mt-5 w-full rounded-xl px-4 py-3 text-base font-medium"
         >
           Done
         </button>

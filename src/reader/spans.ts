@@ -82,9 +82,10 @@ export function buildParagraphNodes(
     .sort((a, b) => a.start - b.start);
 
   let cursor = para.start;
-  for (let i = 0; i < inRange.length; i++) {
-    const token = inRange[i];
-    const nextToken = inRange[i + 1];
+  for (const token of inRange) {
+    // Defensive: analyzers should not emit overlapping or empty tokens,
+    // but never render the same text twice if they do.
+    if (token.start < cursor || token.length <= 0) continue;
 
     if (token.start > cursor) {
       nodes.push({
@@ -94,15 +95,21 @@ export function buildParagraphNodes(
       });
     }
 
-    const nextStart = nextToken ? nextToken.start : para.end;
-    const mergeEnd = Math.max(token.start + token.length, nextStart);
+    // The token's span covers ONLY the token's own text. The gap between
+    // this token and the next (skipped function words, punctuation, spaces)
+    // must be its own raw run — merging it into the token's span would put
+    // the token's underline class on text that isn't the word, and since
+    // consecutive spans are adjacent, same-colored underlines visually fuse
+    // into one long line (worst case: the last token of a paragraph
+    // swallowing everything up to the paragraph end).
+    const tokenEnd = token.start + token.length;
     nodes.push({
-      text: text.slice(token.start, mergeEnd),
+      text: text.slice(token.start, tokenEnd),
       start: token.start,
-      length: mergeEnd - token.start,
+      length: token.length,
       token,
     });
-    cursor = mergeEnd;
+    cursor = tokenEnd;
   }
   if (cursor < para.end) {
     nodes.push({
