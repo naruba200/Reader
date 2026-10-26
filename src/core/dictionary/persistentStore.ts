@@ -4,6 +4,12 @@ import { IndexedDbDictionaryStore } from "./indexeddb";
 import { MemoryDictionaryStore, normalizeKey, recordsFor, type DictionaryStore } from "./store";
 import type { PackInfo, WordIndexRecord } from "./pack";
 import { SortedSearchIndex } from "./searchIndex";
+import {
+  buildGlossIndex,
+  isLatinQuery,
+  searchGlossIndex,
+  type GlossIndex,
+} from "./glossIndex";
 
 export type IndexState = "idle" | "building" | "ready" | "error";
 
@@ -17,6 +23,7 @@ export class PersistentDictionaryStore implements DictionaryStore {
   private readonly overlay: MemoryDictionaryStore;
   private readonly backend: IndexedDbDictionaryStore;
   private searchIndex?: SortedSearchIndex;
+  private glossIndex?: GlossIndex;
   private snapshotEntries?: DictionaryEntry[];
   private indexState: IndexState = "idle";
   private indexStateListeners = new Set<(s: IndexState) => void>();
@@ -75,6 +82,7 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.clear();
     await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
+    this.glossIndex = undefined;
     this.snapshotEntries = undefined;
     this.snapshotBuildPromise = undefined;
     this.setIndexState("idle");
@@ -88,6 +96,7 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.putPackInfo(info);
     await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
+    this.glossIndex = undefined;
     this.snapshotEntries = undefined;
     this.snapshotBuildPromise = undefined;
     this.setIndexState("idle");
@@ -98,6 +107,7 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.backend.deletePack(source);
     await this.backend.invalidateEntriesSnapshot();
     this.searchIndex = undefined;
+    this.glossIndex = undefined;
     this.snapshotEntries = undefined;
     this.snapshotBuildPromise = undefined;
     this.setIndexState("idle");
@@ -235,6 +245,30 @@ export class PersistentDictionaryStore implements DictionaryStore {
     await this.ensureIndex();
     if (!this.searchIndex) return [];
     return this.searchIndex.search(q, this.language, limit);
+  }
+
+  /**
+   * English-meaning search (Japanese dictionary only in practice): match a
+   * Latin-script query against entry glosses and return the corresponding
+   * Japanese words. The gloss index is built lazily in memory from the
+   * snapshot entries on first use and cached for the session, so no extra
+   * IndexedDB schema or storage is needed; it is invalidated wherever the
+   * word index is. Japanese word/reading search is untouched — the caller
+   * merges the two result sets (Japanese first).
+   */
+  async searchByMeaning(query: string, limit = 50): Promise<WordIndexRecord[]> {
+    if (!isLatinQuery(query)) return [];
+    await this.ensureSnapshot();
+    if (!this.snapshotEntries) return [];
+    if (!this.glossIndex) {
+      this.glossIndex = buildGlossIndex(this.snapshotEntries);
+    }
+    return searchGlossIndex(this.glossIndex, query, limit).map((r) => ({
+      key: `meaning:${r.word}`,
+      lang: this.language,
+      word: r.word,
+      reading: r.reading,
+    }));
   }
 
   /** Return the raw sorted search index records (for filtering by source, etc.). */

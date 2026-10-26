@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { getDictionaryStore } from "../core/dictionary";
 import { dictionaryManager, packKey } from "../core/dictionary/downloadManager";
+import { radicalForKanji } from "../core/kanji/radicals";
 import type { DictionaryEntry } from "../core/types";
+import { ActionSheet } from "../components/ActionSheet";
+import { StrokeOrderDiagram } from "./StrokeOrderDiagram";
 
 /**
  * Takoboto-style kanji breakdown for a Japanese word, sourced from the
@@ -14,11 +17,15 @@ import type { DictionaryEntry } from "../core/types";
  * stroke count. JLPT level, SKIP code and frequency are NOT in the pack,
  * so they are omitted rather than faked — getting them needs pack
  * regeneration from kanjidic2.xml (which does carry those fields).
- * Stroke-order diagrams are a follow-up (see ROADMAP.md): KanjiVG would
- * be the dataset, but it is not bundled yet.
+ *
+ * Radicals are NOT from the pack either (it has no radical field). They
+ * come from the Unicode Unihan database (kRSUnicode classical radicals),
+ * bundled in src/core/kanji/radicals.ts — see that file for the source
+ * and license note. Stroke-order diagrams are KanjiVG, lazy-downloaded
+ * per kanji and cached in IndexedDB (see strokeOrder.ts).
  */
 
-interface KanjiInfo {
+export interface KanjiInfo {
   char: string;
   on: string[];
   kun: string[];
@@ -31,7 +38,7 @@ interface KanjiInfo {
 const KANJI_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g;
 const KATAKANA_RE = /^[\u30A0-\u30FF]+$/;
 
-function extractKanji(word: string): string[] {
+export function extractKanji(word: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of word.matchAll(KANJI_RE)) {
@@ -43,7 +50,7 @@ function extractKanji(word: string): string[] {
   return out;
 }
 
-function parseKanjiEntry(
+export function parseKanjiEntry(
   char: string,
   entry: Pick<DictionaryEntry, "readings" | "definition">,
 ): KanjiInfo {
@@ -63,11 +70,47 @@ function parseKanjiEntry(
   return { char, on, kun, meanings, grade, strokes };
 }
 
-/** Kanji cards for the kanji in `word`. Renders nothing when there is no kanji. */
-export function KanjiSection({ word }: { word: string }) {
+/** Load one kanji's KANJIDIC2 info (source-pinned, see below). */
+export async function loadKanjiInfo(char: string): Promise<KanjiInfo | null> {
+  const store = getDictionaryStore("ja");
+  // Source-pinned: plain lookup would return the JMDict word entry
+  // for the kanji (JMDict outranks KANJIDIC2), not the kanji data.
+  const entry = await store.lookup(char, "KANJIDIC2");
+  return entry ? parseKanjiEntry(char, entry) : null;
+}
+
+/** Clipboard write with a textarea fallback (same pattern as copy-word). */
+export async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
+/**
+ * Kanji cards for the kanji in `word`. Each card is tappable: an action
+ * sheet offers Open kanji page, Copy kanji, and Show radical.
+ * Renders nothing when there is no kanji.
+ */
+export function KanjiSection({
+  word,
+  onOpenKanji,
+}: {
+  word: string;
+  onOpenKanji?: (char: string) => void;
+}) {
   const chars = extractKanji(word);
   const [infos, setInfos] = useState<KanjiInfo[] | null>(null);
   const [kanjidicInstalled, setKanjidicInstalled] = useState(true);
+  const [sheetChar, setSheetChar] = useState<string | null>(null);
+  const [copiedChar, setCopiedChar] = useState<string | null>(null);
+  const [expandedRadical, setExpandedRadical] = useState<string | null>(null);
 
   useEffect(() => {
     const check = () => {
@@ -87,13 +130,10 @@ export function KanjiSection({ word }: { word: string }) {
     }
     let cancelled = false;
     void (async () => {
-      const store = getDictionaryStore("ja");
       const found: KanjiInfo[] = [];
       for (const ch of chars) {
-        // Source-pinned: plain lookup would return the JMDict word entry
-        // for the kanji (JMDict outranks KANJIDIC2), not the kanji data.
-        const entry = await store.lookup(ch, "KANJIDIC2");
-        if (entry) found.push(parseKanjiEntry(ch, entry));
+        const info = await loadKanjiInfo(ch);
+        if (info) found.push(info);
       }
       if (!cancelled) setInfos(found);
     })();
@@ -122,45 +162,116 @@ export function KanjiSection({ word }: { word: string }) {
         Kanji
       </h3>
       <div className="space-y-2">
-        {infos.map((info) => (
-          <div key={info.char} className="theme-card flex gap-3 rounded-2xl border p-3 shadow-sm">
-            <div className="w-12 shrink-0 text-center text-4xl font-bold leading-none">
-              {info.char}
+        {infos.map((info) => {
+          const radical = radicalForKanji(info.char);
+          const radicalOpen = expandedRadical === info.char;
+          return (
+            <div
+              key={info.char}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSheetChar(info.char)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSheetChar(info.char);
+                }
+              }}
+              className="theme-card theme-card-interactive flex cursor-pointer gap-3 rounded-2xl border p-3 shadow-sm active:scale-[0.99]"
+            >
+              <div className="w-12 shrink-0 text-center text-4xl font-bold leading-none">
+                {info.char}
+              </div>
+              <div className="min-w-0 flex-1">
+                {info.on.length > 0 && (
+                  <p className="text-sm leading-snug">
+                    <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wider theme-card-muted">
+                      ON
+                    </span>
+                    {info.on.join("、")}
+                  </p>
+                )}
+                {info.kun.length > 0 && (
+                  <p className="mt-0.5 text-sm leading-snug">
+                    <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wider theme-card-muted">
+                      KUN
+                    </span>
+                    {info.kun.join("、")}
+                  </p>
+                )}
+                {info.meanings && (
+                  <p className="mt-1 text-sm leading-snug">{info.meanings}</p>
+                )}
+                {(info.grade ?? info.strokes) && (
+                  <p className="mt-1 text-xs theme-card-muted">
+                    {[
+                      info.grade ? `Grade ${info.grade}` : null,
+                      info.strokes ? `${info.strokes} strokes` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                )}
+                {copiedChar === info.char && (
+                  <p className="mt-1 text-xs text-green-500">Copied ✓</p>
+                )}
+                {radicalOpen && (
+                  <div className="theme-divider mt-2 border-t pt-2">
+                    {radical ? (
+                      <p className="text-sm leading-snug">
+                        <span className="mr-2 text-xl font-bold">{radical.char}</span>
+                        <span className="theme-card-muted">
+                          Radical {radical.number} of 214 · {radical.meaning} ·{" "}
+                          {radical.strokes} strokes
+                        </span>
+                      </p>
+                    ) : (
+                      <p className="text-xs theme-card-muted">
+                        Radical data not available for this character.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+              <StrokeOrderDiagram
+                char={info.char}
+                silent
+                className="w-16 shrink-0 self-start"
+              />
             </div>
-            <div className="min-w-0 flex-1">
-              {info.on.length > 0 && (
-                <p className="text-sm leading-snug">
-                  <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wider theme-card-muted">
-                    ON
-                  </span>
-                  {info.on.join("、")}
-                </p>
-              )}
-              {info.kun.length > 0 && (
-                <p className="mt-0.5 text-sm leading-snug">
-                  <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wider theme-card-muted">
-                    KUN
-                  </span>
-                  {info.kun.join("、")}
-                </p>
-              )}
-              {info.meanings && (
-                <p className="mt-1 text-sm leading-snug">{info.meanings}</p>
-              )}
-              {(info.grade ?? info.strokes) && (
-                <p className="mt-1 text-xs theme-card-muted">
-                  {[
-                    info.grade ? `Grade ${info.grade}` : null,
-                    info.strokes ? `${info.strokes} strokes` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+      <ActionSheet
+        open={sheetChar !== null}
+        title={sheetChar ?? ""}
+        message="What would you like to do with this kanji?"
+        onClose={() => setSheetChar(null)}
+        actions={[
+          ...(onOpenKanji && sheetChar
+            ? [{ label: "Open kanji page", onSelect: () => onOpenKanji(sheetChar) }]
+            : []),
+          ...(sheetChar
+            ? [
+                {
+                  label: "Copy kanji",
+                  onSelect: () => {
+                    void copyText(sheetChar).then(() => {
+                      setCopiedChar(sheetChar);
+                      setTimeout(() => setCopiedChar(null), 1500);
+                    });
+                  },
+                },
+                {
+                  label:
+                    expandedRadical === sheetChar ? "Hide radical" : "Show radical",
+                  onSelect: () =>
+                    setExpandedRadical((cur) => (cur === sheetChar ? null : sheetChar)),
+                },
+              ]
+            : []),
+        ]}
+      />
     </div>
   );
 }

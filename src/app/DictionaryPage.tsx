@@ -9,11 +9,17 @@ import type { IndexState } from "../core/dictionary/persistentStore";
 import { dictionaryManager } from "../core/dictionary/downloadManager";
 import { EntryCard } from "../reader/EntryCard";
 import { KanjiSection } from "../reader/KanjiSection";
+import { KanjiDetailPage } from "../reader/KanjiDetailPage";
 import { Toast } from "../components/Toast";
 import { ConjugationTable } from "../reader/ConjugationTable";
 import { isKanji } from "../core/language/japanese";
 import { recordLookup } from "../study/history";
 import { saveWord, isWordSaved } from "../study/wordBank";
+import { JLPT_LEVELS, loadJlptWords, getWordOfDay } from "../core/wordOfDay";
+import {
+  isLatinQuery,
+  mergeSearchResults,
+} from "../core/dictionary/glossIndex";
 
 export interface DictionaryPageProps {
   onBack: () => void;
@@ -65,8 +71,6 @@ const LANG_LABEL: Record<LanguageCode, string> = {
   fr: "Français",
   zh: "中文",
 };
-
-const JLPT_LEVELS = ["N5", "N4", "N3", "N2", "N1"] as const;
 
 // Recent searches (query strings that led to opening a result), kept
 // separate from the looked-up-words history below.
@@ -145,51 +149,23 @@ type CardData =
   | { type: "jlpt"; level: string }
   | { type: "source"; source: string; label: string; icon: string };
 
-// Cache for parsed JLPT TSV: level -> word[]
-let jlptCache: Record<string, string[]> | null = null;
-let jlptCachePromise: Promise<Record<string, string[]>> | null = null;
-
-async function loadJlptWords(): Promise<Record<string, string[]>> {
-  if (jlptCache) return jlptCache;
-  if (jlptCachePromise) return jlptCachePromise;
-
-  jlptCachePromise = (async () => {
-    try {
-      const resp = await fetch("/dict/jlpt.ja.tsv");
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const text = await resp.text();
-      const result: Record<string, string[]> = {};
-      for (const line of text.split("\n")) {
-        if (line.startsWith("#") || !line.trim()) continue;
-        const tab = line.indexOf("\t");
-        if (tab === -1) continue;
-        const word = line.slice(0, tab).trim();
-        const level = line.slice(tab + 1).trim();
-        if (!word || !level) continue;
-        if (!result[level]) result[level] = [];
-        result[level].push(word);
-      }
-      jlptCache = result;
-      return result;
-    } catch {
-      jlptCache = {};
-      return {};
-    }
-  })();
-
-  return jlptCachePromise;
-}
-
 export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: DictionaryPageProps) {
   const [language, setLanguage] = useState<LanguageCode>(initial?.language ?? "ja");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selected, setSelected] = useState<{ surface: string; entry?: DictionaryEntry } | null>(null);
+  // Dedicated kanji detail view, opened from a kanji card's action sheet.
+  // It sits on top of the entry detail; back returns to the word page.
+  const [kanjiDetail, setKanjiDetail] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
   // Toast for visible failures (e.g. speaker with no working voice).
   const [toast, setToast] = useState<string | null>(null);
   const [searchHistory, setSearchHistory] = useState<string[]>(() => loadSearchHistory());
   const [wordOfDay, setWordOfDay] = useState<{ word: string; level: string; entry?: DictionaryEntry } | null>(null);
+  // Per-level word counts for the JLPT home cards (from the cached TSV;
+  // null until loaded). Counts show even when JMDict is not installed —
+  // the list itself still needs the pack for meanings.
+  const [jlptCounts, setJlptCounts] = useState<Record<string, number> | null>(null);
   const [similar, setSimilar] = useState<SearchResult[]>([]);
   const [jlptFilter, setJlptFilter] = useState<string | null>(null);
   const [posFilter, setPosFilter] = useState<PosFilter | null>(null);
@@ -351,13 +327,29 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
       const store = getDictionaryStore(language);
       const found = await store.search(q, 50);
       if (cancelled) return;
-      setResults(
-        found.map((r) => ({
-          word: r.word,
-          reading: r.reading,
-          key: r.key,
-        })),
-      );
+      let results = found.map((r) => ({
+        word: r.word,
+        reading: r.reading,
+        key: r.key,
+      }));
+      // Japanese dictionary + Latin-script query: also match English
+      // glosses, so users without a Japanese word or keyboard still find
+      // the corresponding Japanese words. Japanese matches stay first;
+      // the word/reading search path itself is unchanged.
+      if (language === "ja" && isLatinQuery(q)) {
+        const meaning = await store.searchByMeaning(q, 50);
+        if (cancelled) return;
+        results = mergeSearchResults(
+          results,
+          meaning.map((r) => ({
+            word: r.word,
+            reading: r.reading,
+            key: r.key,
+          })),
+          50,
+        );
+      }
+      setResults(results);
     }, 100);
     return () => {
       cancelled = true;
@@ -366,23 +358,24 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
   }, [query, language]);
 
   // Word of the day: deterministic pick from the JLPT list by day-of-year.
+  // The pick itself lives in src/core/wordOfDay.ts (shared with the daily
+  // notification) so the home screen and the notification always match.
   useEffect(() => {
     if (language !== "ja") {
       setWordOfDay(null);
+      setJlptCounts(null);
       return;
     }
     let cancelled = false;
     void (async () => {
       const jlpt = await loadJlptWords();
-      const combined: Array<{ word: string; level: string }> = [];
-      for (const level of JLPT_LEVELS) {
-        for (const w of jlpt[level] ?? []) combined.push({ word: w, level });
+      if (!cancelled) {
+        const counts: Record<string, number> = {};
+        for (const level of JLPT_LEVELS) counts[level] = jlpt[level]?.length ?? 0;
+        setJlptCounts(counts);
       }
-      if (combined.length === 0) return;
-      const now = new Date();
-      const start = new Date(now.getFullYear(), 0, 0);
-      const day = Math.floor((now.getTime() - start.getTime()) / 86400000);
-      const pick = combined[day % combined.length];
+      const pick = await getWordOfDay();
+      if (!pick) return;
       const store = getDictionaryStore("ja");
       const entry = await store.lookup(pick.word);
       if (!cancelled) setWordOfDay({ ...pick, entry });
@@ -508,10 +501,12 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
     setQuery("");
   };
 
-  // Android back-button: pop internal sub-views (entry detail, then word
-  // list) before falling through to the tab-level back behavior.
+  // Android back-button: pop internal sub-views (kanji detail, then
+  // entry detail, then word list) before falling through to tab-level back.
   useEffect(() => {
-    if (selected) {
+    if (kanjiDetail) {
+      onRegisterCloseHandler?.(() => setKanjiDetail(null));
+    } else if (selected) {
       onRegisterCloseHandler?.(() => setSelected(null));
     } else if (activeCard) {
       onRegisterCloseHandler?.(() => {
@@ -523,7 +518,7 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
       onRegisterCloseHandler?.(null);
     }
     return () => onRegisterCloseHandler?.(null);
-  }, [selected, activeCard, onRegisterCloseHandler]);
+  }, [kanjiDetail, selected, activeCard, onRegisterCloseHandler]);
 
   const listTotalPages = Math.ceil(listTotal / LIST_PAGE_SIZE);
 
@@ -541,13 +536,14 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
         <button
           type="button"
           onClick={() => {
+            if (kanjiDetail) { setKanjiDetail(null); return; }
             if (selected) { setSelected(null); return; }
             if (activeCard) { setActiveCard(null); return; }
             onBack();
           }}
           className="rounded-lg px-2.5 py-1.5 text-sm font-medium hover:bg-gray-100 active:scale-95 dark:hover:bg-gray-700"
         >
-          ← {selected ? "Back" : activeCard ? "Cards" : "Library"}
+          ← {kanjiDetail ? "Back" : selected ? "Back" : activeCard ? "Cards" : "Library"}
         </button>
         <h1 className="text-base font-bold tracking-tight">Dictionary</h1>
         <div className="ml-auto flex gap-1.5">
@@ -575,7 +571,11 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${LANG_LABEL[language]}…`}
+            placeholder={
+              language === "ja"
+                ? "Search Japanese or English meanings…"
+                : `Search ${LANG_LABEL[language]}…`
+            }
             className="theme-card flex-1 rounded-xl border px-4 py-2.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           />
           {indexState === "building" && (
@@ -590,7 +590,17 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
           )}
         </div>
 
-        {selected ? (
+        {kanjiDetail ? (
+          /* Dedicated kanji detail view */
+          <KanjiDetailPage
+            char={kanjiDetail}
+            onBack={() => setKanjiDetail(null)}
+            onOpenWord={(w) => {
+              setKanjiDetail(null);
+              openLookup("ja", w);
+            }}
+          />
+        ) : selected ? (
           /* Entry detail view */
           <div>
             <div className="theme-card rounded-2xl border p-4 shadow-sm">
@@ -602,7 +612,12 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                 onSpeakError={(msg) => setToast(msg)}
               />
             </div>
-            {language === "ja" && <KanjiSection word={selected.surface} />}
+            {language === "ja" && (
+              <KanjiSection
+                word={selected.surface}
+                onOpenKanji={(c) => setKanjiDetail(c)}
+              />
+            )}
             {similar.length > 0 && (
               <div className="mt-4">
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -821,7 +836,11 @@ export function DictionaryPage({ onBack, initial, onRegisterCloseHandler }: Dict
                     >
                       <div className="text-lg font-bold tracking-tight">{level}</div>
                       <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                        {jmdictInstalled ? "Open" : "Need JMDict"}
+                        {!jmdictInstalled
+                          ? "Need JMDict"
+                          : jlptCounts
+                            ? `${jlptCounts[level].toLocaleString()} words`
+                            : "Open"}
                       </div>
                     </button>
                   ))}
