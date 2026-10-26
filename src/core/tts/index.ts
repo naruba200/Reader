@@ -188,12 +188,17 @@ class CapacitorNativeEngine implements TTSEngine {
     this.playing = true;
     if (rate !== undefined) this.rate = rate;
 
-    // Find the voice to determine language
-    let lang = "ja-JP";
-    if (voiceId) {
-      const voice = this.voices.find((v) => v.id === voiceId);
-      if (voice) lang = voice.lang;
+    // Find the voice to determine language. A missing voiceId is a
+    // programming error at this point (callers must pick a voice for the
+    // requested language first) — fail loudly instead of guessing a
+    // language and speaking gibberish with the wrong voice.
+    if (!voiceId) {
+      this.playing = false;
+      throw new Error("No voice selected for this language");
     }
+    let lang = "ja-JP";
+    const voice = this.voices.find((v) => v.id === voiceId);
+    if (voice) lang = voice.lang;
 
     try {
       await TextToSpeech.speak({
@@ -299,4 +304,46 @@ export function getAllVoices(): TTSVoice[] {
 
 export function getVoicesForLanguage(lang: string): TTSVoice[] {
   return getAllVoices().filter((v) => v.lang.startsWith(lang));
+}
+
+const JAPANESE_RE = /[\u3040-\u30FF\u4E00-\u9FFF]/;
+
+/**
+ * Language for speaking a word: detected from the TEXT, not from any
+ * metadata. The old code derived it from the word's JLPT level, so a
+ * Japanese word with no JLPT level (most words) was spoken as "en-US" —
+ * an English voice reading Japanese text, i.e. gibberish. Level is only
+ * a fallback for text with no Japanese characters (e.g. a romaji headword).
+ */
+export function languageForText(
+  text: string,
+  levelHint?: string,
+): "ja" | "en" {
+  if (JAPANESE_RE.test(text)) return "ja";
+  if (levelHint && levelHint.startsWith("N")) return "ja";
+  return "en";
+}
+
+/** Shown when a Japanese word cannot be spoken because no Japanese voice exists. */
+export const NO_JAPANESE_VOICE_MESSAGE =
+  "No Japanese voice installed on this device. Install Japanese voice data " +
+  "(Android: Settings → System → Languages → Text-to-Speech → Google " +
+  "Text-to-Speech → Install voice data → Japanese), then try again.";
+
+/**
+ * Voices for a language, waiting briefly if none are known yet: engine
+ * voices load asynchronously (notably the native plugin's), so a first
+ * tap right after app start must not conclude "no voice" from a still
+ * empty cache. Returns immediately when voices are already known.
+ */
+export async function waitForVoices(
+  langPrefix: string,
+  timeoutMs = 2000,
+): Promise<TTSVoice[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const voices = getVoicesForLanguage(langPrefix);
+    if (voices.length > 0 || Date.now() >= deadline) return voices;
+    await new Promise((r) => setTimeout(r, 200));
+  }
 }
