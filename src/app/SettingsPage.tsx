@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { useTheme, THEME_OPTIONS } from "./ThemeContext";
 import { loadFollowSystemFontSize, saveFollowSystemFontSize } from "../reader/systemPrefs";
 import { exportBackup, importBackup } from "../core/library/backup";
 import { getLibraryStore } from "../core/library/libraryStore";
 import { loadWordBank } from "../study/wordBank";
 import { loadStats, setDailyGoal, formatDuration, todayKey } from "../study/stats";
+import {
+  isDailyWordEnabled,
+  requestAndEnableDailyWord,
+  disableDailyWord,
+} from "../core/notifications/dailyWord";
 
 type LibraryViewMode = "grid" | "list";
 
@@ -21,12 +27,41 @@ export function SettingsPage({
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
   const [stats, setStats] = useState(() => loadStats());
   const [followSystemFont, setFollowSystemFont] = useState<boolean>(() => loadFollowSystemFontSize());
+  const [dailyWord, setDailyWord] = useState<boolean>(() => isDailyWordEnabled());
+  const [dailyWordMsg, setDailyWordMsg] = useState<string | null>(null);
+  const [dailyWordBusy, setDailyWordBusy] = useState(false);
 
   const toggleFollowSystemFont = () => {
     setFollowSystemFont((v) => {
       const next = !v;
       saveFollowSystemFontSize(next);
       return next;
+    });
+  };
+
+  // Daily word notification: on native, a denied permission auto-disables
+  // the toggle (App launch does the same check); on web it can't run.
+  const toggleDailyWord = () => {
+    if (dailyWordBusy) return;
+    if (dailyWord) {
+      setDailyWordBusy(true);
+      void disableDailyWord().then(() => {
+        setDailyWord(false);
+        setDailyWordMsg(null);
+        setDailyWordBusy(false);
+      });
+      return;
+    }
+    if (!Capacitor.isNativePlatform()) {
+      setDailyWordMsg("Daily word notifications are available in the Android app only.");
+      return;
+    }
+    setDailyWordBusy(true);
+    setDailyWordMsg(null);
+    void requestAndEnableDailyWord().then((r) => {
+      setDailyWord(r.ok);
+      if (!r.ok) setDailyWordMsg(r.message);
+      setDailyWordBusy(false);
     });
   };
 
@@ -108,6 +143,44 @@ export function SettingsPage({
               />
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="mb-6">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Notifications
+        </h2>
+        <div className="theme-card overflow-hidden rounded-xl border">
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <span>
+              <span className="block font-medium">Word of the day</span>
+              <span className="block text-sm theme-card-muted">
+                A notification at 9:00 AM with the same word the dictionary home shows
+              </span>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={dailyWord}
+              aria-label="Word of the day notification"
+              onClick={toggleDailyWord}
+              disabled={dailyWordBusy}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                dailyWord ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${
+                  dailyWord ? "left-[22px]" : "left-0.5"
+                }`}
+              />
+            </button>
+          </div>
+          {dailyWordMsg && (
+            <p className="theme-divider border-t px-4 py-2 text-xs theme-card-muted">
+              {dailyWordMsg}
+            </p>
+          )}
         </div>
       </section>
 
@@ -233,6 +306,20 @@ export function SettingsPage({
           <p className="theme-divider border-t px-4 py-2 text-xs theme-card-muted">
             Backs up library data, reading progress, settings, reading stats and your word bank.
             Book files themselves are not included — re-import them after a restore.
+          </p>
+        </div>
+      </section>
+
+      <section className="mb-6">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          About
+        </h2>
+        <div className="theme-card overflow-hidden rounded-xl border">
+          <p className="px-4 py-3 text-xs leading-relaxed theme-card-muted">
+            Dictionary data: JMdict and KANJIDIC2 (EDRDG). Stroke-order
+            diagrams: KanjiVG (CC BY-SA 3.0), downloaded per kanji and cached
+            on your device. Radical data: Unicode Unihan database (Unicode
+            License).
           </p>
         </div>
       </section>

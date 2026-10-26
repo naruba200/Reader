@@ -14,6 +14,7 @@ import { SettingsPage } from "./SettingsPage";
 import { useTheme } from "./ThemeContext";
 import { BookSheet } from "./BookSheet";
 import { StudyPage } from "../study/StudyPage";
+import { syncDailyWordIfEnabled } from "../core/notifications/dailyWord";
 import {
   getLibraryStore,
   type ReadingStatus,
@@ -251,6 +252,31 @@ export function App() {
       else { void CapApp.exitApp(); }
     }).then((handle) => { remove = handle.remove; });
     return () => { remove?.(); };
+  }, []);
+
+  // Daily word notification: refresh the 30-day queue on launch, and
+  // open the tapped word's dictionary entry (mirrors openDictionary).
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    void syncDailyWordIfEnabled();
+    let remove: (() => void) | undefined;
+    void (async () => {
+      const { LocalNotifications } = await import("@capacitor/local-notifications");
+      const handle = await LocalNotifications.addListener(
+        "localNotificationActionPerformed",
+        (action) => {
+          const word = action.notification.extra?.word;
+          if (typeof word === "string" && word) {
+            setDictInitial({ language: "ja", word });
+            setView("dictionary");
+          }
+        },
+      );
+      remove = () => void handle.remove();
+    })();
+    return () => {
+      remove?.();
+    };
   }, []);
 
   // Load books: show cache instantly, then refresh from IndexedDB in background
