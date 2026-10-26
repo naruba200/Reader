@@ -47,6 +47,8 @@ import {
   setActiveRate,
   getAllEngines,
   getAllVoices,
+  waitForVoices,
+  NO_JAPANESE_VOICE_MESSAGE,
   type TTSEngine,
   type TTSVoice,
 } from "../core/tts";
@@ -740,12 +742,23 @@ export function Reader({
     const active = getActiveEngine();
     const engines: TTSEngine[] = [active, ...getAllEngines().filter((e) => e.id !== active.id)];
 
+    // Voices for the BOOK's language, read fresh (not from the selector's
+    // cached state): a voice saved while reading another language must
+    // never speak this book, and an engine with no voice for this
+    // language is skipped instead of falling back to a guessed language.
+    const voices = await waitForVoices(book.language);
+    const savedId = getActiveVoiceId();
     let spoken = false;
     for (const engine of engines) {
       const isActive = engine.id === active.id;
-      const voiceId = isActive
-        ? (getActiveVoiceId() ?? ttsVoices.find((v) => v.engine === engine.id)?.id)
-        : ttsVoices.find((v) => v.engine === engine.id)?.id;
+      const savedMatches =
+        isActive &&
+        savedId != null &&
+        voices.some((v) => v.id === savedId && v.engine === engine.id);
+      const voiceId = savedMatches
+        ? savedId
+        : voices.find((v) => v.engine === engine.id)?.id;
+      if (!voiceId) continue;
       try {
         await engine.speak(text, voiceId, ttsRate);
         spoken = true;
@@ -758,12 +771,16 @@ export function Reader({
       setTtsPlaying(false);
       setTtsPaused(false);
       setTtsSentenceIndex(-1);
-      setToast("Read aloud failed — no working voice on this device");
+      setToast(
+        book.language === "ja"
+          ? NO_JAPANESE_VOICE_MESSAGE
+          : "Read aloud failed — no working voice on this device",
+      );
       return;
     }
     // Continue to next sentence
     return speakSentence(sentences, index + 1);
-  }, [ttsRate, ttsVoices]);
+  }, [ttsRate, book.language]);
 
   const changeTtsRate = useCallback((rate: number) => {
     const clamped = Math.min(2, Math.max(0.5, Math.round(rate * 10) / 10));

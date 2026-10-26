@@ -5,7 +5,9 @@ import {
   getActiveRate,
   getActiveVoiceId,
   getAllEngines,
-  getVoicesForLanguage,
+  languageForText,
+  waitForVoices,
+  NO_JAPANESE_VOICE_MESSAGE,
 } from "../core/tts";
 
 export interface EntryCardProps {
@@ -36,11 +38,6 @@ const LEVEL_BADGE: Partial<Record<Level, string>> = {
   N2: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
   N1: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
 };
-
-function langForLevel(level: Level | undefined): string {
-  if (level && level.startsWith("N")) return "ja-JP";
-  return "en-US";
-}
 
 const JAPANESE_RE = /[\u3040-\u30FF\u4E00-\u9FFF]/;
 
@@ -82,34 +79,52 @@ export function EntryCard({
 }: EntryCardProps) {
   const [played, setPlayed] = useState(false);
   const [speaking, setSpeaking] = useState(false);
-  const [speakError, setSpeakError] = useState(false);
+  const [speakError, setSpeakError] = useState<string | null>(null);
   const surface = word ?? entry?.word ?? "";
   const levelText = level && level !== "UNKNOWN" ? level : undefined;
 
   // Speak through the app's TTS engine (active first, then every other
   // engine), NOT raw browser speechSynthesis — that engine is silent on
   // Android WebView, which is why the speaker icon used to do nothing.
-  // The voice is matched to the word's language: the saved voice is used
-  // only when it actually speaks that language, otherwise the first voice
-  // for the language on that engine.
+  // The language comes from the WORD'S TEXT (Japanese characters → ja):
+  // deriving it from the JLPT level was the gibberish bug, because a
+  // Japanese word with no JLPT level was spoken by an English voice.
+  // A voice is only ever used when it speaks that language, and when no
+  // voice for the language exists the user gets an install hint instead
+  // of gibberish.
   const speak = async () => {
     if (speaking || !surface) return;
-    setSpeakError(false);
-    const lang = langForLevel(level);
-    const langPrefix = lang.split("-")[0];
+    setSpeakError(null);
+    setSpeaking(true);
+    const lang = languageForText(surface, level);
     const active = getActiveEngine();
     const engines = [active, ...getAllEngines().filter((e) => e.id !== active.id)];
-    const voicesForLang = getVoicesForLanguage(langPrefix);
+    // Voices load asynchronously; wait briefly rather than concluding
+    // "no voice" from a still-empty cache right after app start.
+    const voices = await waitForVoices(lang);
+    if (voices.length === 0) {
+      const msg =
+        lang === "ja"
+          ? NO_JAPANESE_VOICE_MESSAGE
+          : "Couldn't play audio — no working voice on this device";
+      setSpeaking(false);
+      setSpeakError(msg);
+      onSpeakError?.(msg);
+      return;
+    }
     const savedId = getActiveVoiceId();
-    setSpeaking(true);
     let spoken = false;
     for (const engine of engines) {
       const savedMatchesLang =
         savedId != null &&
-        voicesForLang.some((v) => v.id === savedId && v.engine === engine.id);
+        voices.some((v) => v.id === savedId && v.engine === engine.id);
       const voiceId = savedMatchesLang
         ? savedId
-        : voicesForLang.find((v) => v.engine === engine.id)?.id;
+        : voices.find((v) => v.engine === engine.id)?.id;
+      // Never speak with a voice of the wrong language (or none): the
+      // native engine used to default to ja-JP, which is exactly how an
+      // English word could come out as Japanese and vice versa.
+      if (!voiceId) continue;
       try {
         await engine.speak(surface, voiceId, getActiveRate());
         spoken = true;
@@ -122,8 +137,9 @@ export function EntryCard({
     if (spoken) {
       setPlayed(true);
     } else {
-      setSpeakError(true);
-      onSpeakError?.("Couldn't play audio — no working voice on this device");
+      const msg = "Couldn't play audio — no working voice on this device";
+      setSpeakError(msg);
+      onSpeakError?.(msg);
     }
   };
 
@@ -166,9 +182,7 @@ export function EntryCard({
         </div>
       </div>
       {speakError && (
-        <p className="mt-1 text-xs text-red-400">
-          Couldn&apos;t play audio — no working voice on this device
-        </p>
+        <p className="mt-1 text-xs text-red-400">{speakError}</p>
       )}
 
       <div className="mt-2 flex flex-wrap gap-2 text-xs">
