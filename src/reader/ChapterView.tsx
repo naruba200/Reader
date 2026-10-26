@@ -142,8 +142,14 @@ export const ChapterView = memo(function ChapterView({
               const grammarMatch = node.token ? grammarMatchFor(node.start, node.length) : undefined;
               const ttsHighlight = isTtsHighlighted(node.start, node.length);
               const grammarHighlight = !!grammarMatch;
+              // The level class underlines the token; the gap class breaks
+              // the line between adjacent same-level tokens (Japanese has
+              // no inter-word spaces, so without it consecutive underlines
+              // fuse into one long line — see .token-underline-gap).
+              const lvlClass = node.token ? levelClass(node.token.level) : null;
               const combinedClass = [
-                node.token ? levelClass(node.token.level) : undefined,
+                lvlClass,
+                lvlClass ? "token-underline-gap" : undefined,
                 ttsHighlight ? "bg-yellow-200 dark:bg-yellow-800 rounded px-0.5" : undefined,
                 grammarHighlight ? "bg-blue-100 dark:bg-blue-900 rounded px-0.5 border border-blue-300 dark:border-blue-700" : undefined,
               ].filter(Boolean).join(" ") || undefined;

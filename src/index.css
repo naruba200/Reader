@@ -174,16 +174,28 @@ body,
    text is LIGHTER — the variables are set per data-theme (the unified
    preference from ThemeContext), so sepia/warm/amoled cards follow their
    theme instead of falling back to hardcoded light/dark colors.
-   Contrast notes (light text on card bg): light ~13:1, dark ~17:1,
-   sepia ~12:1, warm ~12:1, dark-warm ~15:1, amoled ~18:1.
+   The three light-base themes must also be VISIBLY DISTINCT from each
+   other: the old values were all near-black muted tones (#23272f /
+   #4a4136 / #4a3f28) that read as "the same dark card" on a phone, even
+   though the hexes differed. The new values separate by HUE at a middle
+   lightness where hue is actually visible: light = cool slate, sepia =
+   red-brown, warm = golden brown. All still pass WCAG AA for normal text
+   (light 6.9:1, sepia 5.8:1, warm 6.0:1; muted text 4.2–5.1:1).
    AMOLED's page is already pure black, so its card is near-black with a
    visible border instead of a darker shade (there is nothing darker). */
 :root {
-  --card-bg: #23272f;
+  --card-bg: #4b5563;
   --card-text: #f3f4f6;
-  --card-muted: #aeb6c2;
-  --card-border: #3a414d;
-  --card-chip-bg: #3a414d;
+  --card-muted: #cbd5e1;
+  --card-border: #6b7280;
+  --card-chip-bg: #5b6675;
+}
+:root[data-theme="light"] {
+  --card-bg: #4b5563;
+  --card-text: #f3f4f6;
+  --card-muted: #cbd5e1;
+  --card-border: #6b7280;
+  --card-chip-bg: #5b6675;
 }
 :root.dark {
   --card-bg: #05070c;
@@ -193,18 +205,18 @@ body,
   --card-chip-bg: #1f2937;
 }
 :root[data-theme="sepia"] {
-  --card-bg: #4a4136;
+  --card-bg: #6b5b45;
   --card-text: #f5f1e8;
-  --card-muted: #cfc4ae;
-  --card-border: #5d5344;
-  --card-chip-bg: #5d5344;
+  --card-muted: #d8cdb8;
+  --card-border: #7d6b52;
+  --card-chip-bg: #7d6b52;
 }
 :root[data-theme="warm"] {
-  --card-bg: #4a3f28;
+  --card-bg: #7a5a1e;
   --card-text: #fff9eb;
-  --card-muted: #ddd2b8;
-  --card-border: #5d5238;
-  --card-chip-bg: #5d5238;
+  --card-muted: #e3d3a8;
+  --card-border: #8a6a2a;
+  --card-chip-bg: #8a6a2a;
 }
 :root[data-theme="dark-warm"] {
   --card-bg: #0c0a08;
@@ -268,6 +280,33 @@ body,
 }
 .theme-card-interactive:active {
   filter: brightness(1.15);
+}
+
+/* JLPT underlines: a 2px inline-end gap between token underlines.
+   Why: buildParagraphNodes already scopes each token's span to its own
+   text, but Japanese has no spaces between words, so adjacent same-level
+   tokens' text-decoration underlines touch at the boundary and render as
+   one continuous line — visually identical to the old "underline spans
+   the whole column" bug. The gap breaks the line into per-word segments.
+   In vertical-rl the inline direction runs top-to-bottom, so this is a
+   vertical notch in the side line; horizontally it reads as slight word
+   spacing on underlined words only. */
+.token-underline-gap {
+  margin-inline-end: 2px;
+}
+
+/* KanjiVG stroke-by-stroke draw animation. Each path gets pathLength=1
+   (so no measuring is needed) and starts fully offset; the animation
+   draws it in, staggered per stroke via animation-delay. */
+.kanjivg-path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: kanjivg-draw 450ms ease forwards;
+}
+@keyframes kanjivg-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
 }
 
 /* Footer icon button active state */
